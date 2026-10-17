@@ -42,6 +42,21 @@ class PostProcessingStreamTest {
     }
 
     @Test
+    fun qwenNativeStreamsAllowNullIntermediateReasonAndRequireStop() {
+        val stream = """
+            data: {"output":{"choices":[{"message":{"content":"answer"},"finish_reason":"null"}]}}
+
+            data: {"output":{"choices":[{"finish_reason":"stop"}]}}
+
+            data: [DONE]
+
+        """.trimIndent()
+        listOf(PostProcessingProvider.QWEN_TEXT, PostProcessingProvider.QWEN_MULTIMODAL).forEach { provider ->
+            assertEquals("answer", PostProcessingStream.parseText(provider, stream))
+        }
+    }
+
+    @Test
     fun anthropicCollectsTextBlocksAndIgnoresThinking() {
         val stream = """
             event: content_block_delta
@@ -68,6 +83,55 @@ class PostProcessingStreamTest {
         }
         assertThrows(PostProcessingStream.ServiceException::class.java) {
             PostProcessingStream.parseText(PostProcessingProvider.OPENAI_COMPATIBLE, partial + "data: {\"error\":{\"message\":\"overloaded\"}}\n\n")
+        }
+    }
+
+    @Test
+    fun incompleteFinishReasonsAndStatusesDoNotReturnPartialText() {
+        val cases = listOf(
+            PostProcessingProvider.GOOGLE to
+                """
+                    data: {"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"CONTINUATION"}]}
+
+                """.trimIndent(),
+            PostProcessingProvider.VERTEX_AI to
+                """
+                    data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}
+
+                    data: [DONE]
+
+                """.trimIndent(),
+            PostProcessingProvider.ANTHROPIC to
+                """
+                    data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}
+
+                    data: {"type":"message_stop"}
+
+                """.trimIndent(),
+            PostProcessingProvider.MISTRAL to
+                """
+                    data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}
+
+                    data: [DONE]
+
+                """.trimIndent(),
+            PostProcessingProvider.AZURE_OPENAI_RESPONSES to
+                """
+                    data: {"type":"response.completed","response":{"status":"incomplete","output_text":"partial"}}
+
+                """.trimIndent(),
+            PostProcessingProvider.QWEN_TEXT to
+                """
+                    data: {"output":{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}}
+
+                    data: [DONE]
+
+                """.trimIndent(),
+        )
+        cases.forEach { (provider, stream) ->
+            assertThrows(PostProcessingRequest.InvalidResponseException::class.java) {
+                PostProcessingStream.parseText(provider, stream)
+            }
         }
     }
 }

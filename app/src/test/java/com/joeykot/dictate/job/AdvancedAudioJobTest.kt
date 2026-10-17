@@ -3,6 +3,7 @@ package com.joeykot.dictate.job
 import android.os.Looper
 import com.joeykot.dictate.DictateApplication
 import com.joeykot.dictate.advanced_audio.http.AdvancedCancellationSource
+import com.joeykot.dictate.advanced_audio.realtime.RealtimeSessionException
 import com.joeykot.dictate.audio.AudioEncodingPlan
 import com.joeykot.dictate.model.AdvancedAudioConfig
 import com.joeykot.dictate.model.AppSettings
@@ -96,6 +97,25 @@ class AdvancedAudioJobTest {
         executor("worker").shutdownNow()
         executor("realtimeWorker").shutdownNow()
         executor("scheduler").shutdownNow()
+    }
+
+    @Test
+    fun realtimeFailurePlaceholdersCoverOnlyRemoteAndProtocolFailures() {
+        assertEquals(
+            "[Network connection failed]",
+            realtimeFailurePlaceholder(RealtimeSessionException.WebSocketConnectionFailed),
+        )
+        assertEquals(
+            "[Invalid ASR response]",
+            realtimeFailurePlaceholder(RealtimeSessionException.ConnectionClosedBeforeCompletion),
+        )
+        assertEquals(
+            "[Network timeout]",
+            realtimeFailurePlaceholder(RealtimeSessionException.FinalizationTimeout),
+        )
+        assertNull(realtimeFailurePlaceholder(RealtimeSessionException.InvalidConfiguration))
+        assertNull(realtimeFailurePlaceholder(RealtimeSessionException.AudioSourceFailed))
+        assertNull(realtimeFailurePlaceholder(RealtimeSessionException.SessionCancelled))
     }
 
     @Test

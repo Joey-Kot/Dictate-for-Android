@@ -230,6 +230,25 @@ class PostProcessingJobTest {
     }
 
     @Test
+    fun failedPromptExecutionDoesNotReplaceSelectedTextWithAnAsrPlaceholder() {
+        TestAndroidKeyStore.install()
+        try {
+            val prompt = draft().copy(title = "Rewrite", prompt = "Rewrite the selected text.")
+            val settings = runtime().app.copy(postProcessing = PostProcessingConfig(prompts = listOf(prompt)))
+            background { application.settingsRepository.save(settings, "", "", mapOf(prompt.id to "prompt-key")) }
+            respond = { _, socket -> socket.reply(503, "{\"error\":\"temporarily unavailable\"}") }
+
+            assertTrue(controller.startPostProcessing("Original text", prompt.id))
+            await { controller.currentState().state == JobState.IDLE }
+
+            assertEquals(1, requestCount.get())
+            assertNoDeliverySideEffects()
+        } finally {
+            TestAndroidKeyStore.remove()
+        }
+    }
+
+    @Test
     fun connectionTestRetriesUsingSharedPolicyWithoutDeliveringTextOrReplacingRecording() {
         respond = { attempt, exchange ->
             if (attempt == 1) exchange.reply(503, "{\"error\":\"temporarily unavailable\"}")

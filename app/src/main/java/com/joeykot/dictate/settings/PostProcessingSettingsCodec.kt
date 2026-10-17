@@ -12,7 +12,7 @@ import org.json.JSONObject
 /** Configuration encoding retains null values: deletion is applied only when building requests. */
 internal object PostProcessingSettingsCodec {
     fun encode(config: PostProcessingConfig): JSONObject = JSONObject()
-        .put("provider", config.provider.name)
+        .put("provider", config.provider.id)
         .put("baseUrl", config.baseUrl.trim())
         .put("model", config.model.trim())
         .put("prompts", encodePrompts(config.prompts))
@@ -25,7 +25,7 @@ internal object PostProcessingSettingsCodec {
                 .put("customIcon", prompt.customIcon ?: JSONObject.NULL)
                 .put("title", prompt.title.trim())
                 .put("prompt", prompt.prompt)
-                .put("provider", prompt.provider?.name ?: JSONObject.NULL)
+                .put("provider", prompt.provider?.id ?: JSONObject.NULL)
                 .put("baseUrl", prompt.baseUrl.trim())
                 .put("model", prompt.model.trim())
                 .put("additionalParameters", AdditionalParameters.parseObject(prompt.additionalJson)))
@@ -33,8 +33,8 @@ internal object PostProcessingSettingsCodec {
     }
 
     fun decode(root: JSONObject): PostProcessingConfig {
-        val providerName = string(root, "provider")
-        val provider = PostProcessingProvider.entries.find { it.name == providerName }
+        val providerId = string(root, "provider")
+        val provider = PostProcessingProvider.fromId(providerId)
             ?: throw IllegalArgumentException(AppStrings.get(R.string.val_post_provider_invalid, "Invalid postProcessing.provider"))
         return PostProcessingConfig(
             provider = provider,
@@ -63,8 +63,8 @@ internal object PostProcessingSettingsCodec {
             prompt = string(item, "prompt"),
             additionalJson = if (extra.length() == 0) "" else extra.toString(),
             provider = if (!item.has("provider") || item.isNull("provider")) null else {
-                val name = string(item, "provider")
-                PostProcessingProvider.entries.find { it.name == name }
+                val providerId = string(item, "provider")
+                PostProcessingProvider.fromId(providerId)
                     ?: throw IllegalArgumentException(AppStrings.get(R.string.val_post_provider_invalid, "Invalid postProcessing.provider"))
             },
             baseUrl = if (item.has("baseUrl")) string(item, "baseUrl") else "",

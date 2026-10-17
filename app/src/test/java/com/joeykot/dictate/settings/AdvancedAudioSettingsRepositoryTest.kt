@@ -102,6 +102,39 @@ class AdvancedAudioSettingsRepositoryTest {
     }
 
     @Test
+    fun enabledAdvancedExportImportsWithoutSecretsIntoFreshInstallation() {
+        val source = SettingsRepository(context)
+        val config = AdvancedAudioConfig(
+            enabled = true,
+            workflowJson = fixture("advanced_audio/workflows/valid-v2-typed-request.json"),
+            values = linkedMapOf("model" to "example-asr", "sample_rate" to "16000"),
+        )
+        background {
+            source.save(
+                AppSettings(
+                    provider = ProviderConfig(baseUrl = "https://asr.example.test/v1", model = "legacy-model"),
+                    advancedAudio = config,
+                ),
+                apiKey = "",
+                advancedAudioSecrets = mapOf("api_key" to "source-secret"),
+            )
+        }
+        val exported = source.exportJson()
+        assertFalse(JSONObject(exported).getJSONObject("advancedAudio").has("secrets"))
+
+        // A Debug APK has a distinct preferences and Keystore namespace.
+        clearPreferences()
+        val target = SettingsRepository(context)
+        val preview = target.previewImport(exported)
+        assertEquals(config, preview.settings.advancedAudio)
+        assertFalse(preview.hasApiKeys)
+
+        background { target.applyImport(preview, allowApiKey = false) }
+        assertEquals(config, target.get().advancedAudio)
+        assertTrue(target.advancedAudioSecrets().isEmpty())
+    }
+
+    @Test
     fun arbitrarySecretIdsAreEncryptedAndReplacingTheSnapshotRemovesStaleIds() {
         val repository = SettingsRepository(context)
         val config = AdvancedAudioConfig(

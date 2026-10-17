@@ -30,27 +30,44 @@ class PostProcessingClientTest {
             TestServer().use { server ->
                 val (path, auth) = when (provider) {
                     PostProcessingProvider.GOOGLE -> "/v1beta/models/independent-model:generateContent" to "x-goog-api-key: prompt-secret"
+                    PostProcessingProvider.VERTEX_AI -> "/v1/projects/project/locations/global/publishers/google/models/independent-model:generateContent" to "Authorization: Bearer prompt-secret"
                     PostProcessingProvider.ANTHROPIC -> "/v1/messages" to "x-api-key: prompt-secret"
                     PostProcessingProvider.OPENAI_RESPONSES -> "/v1/responses" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.AZURE_OPENAI_RESPONSES -> "/openai/v1/responses" to "api-key: prompt-secret"
+                    PostProcessingProvider.AZURE_OPENAI_CHAT_COMPLETIONS -> "/openai/v1/chat/completions" to "api-key: prompt-secret"
                     PostProcessingProvider.DEEPSEEK -> "/chat/completions" to "Authorization: Bearer prompt-secret"
-                    PostProcessingProvider.QWEN -> "/compatible-mode/v1/chat/completions" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.QWEN_TEXT -> "/api/v1/services/aigc/text-generation/generation" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.QWEN_MULTIMODAL -> "/api/v1/services/aigc/multimodal-generation/generation" to "Authorization: Bearer prompt-secret"
                     PostProcessingProvider.GLM -> "/api/paas/v4/chat/completions" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.VOLCENGINE_ARK_CHAT_COMPLETIONS -> "/api/v3/chat/completions" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.VOLCENGINE_ARK_RESPONSES -> "/api/v3/responses" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.BAIDU_QIANFAN -> "/v2/chat/completions" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.GROQ -> "/openai/v1/chat/completions" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.COHERE -> "/compatibility/v1/chat/completions" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.MINIMAX_CHAT_COMPLETION_V2 -> "/v1/text/chatcompletion_v2" to "Authorization: Bearer prompt-secret"
                     else -> "/v1/chat/completions" to "Authorization: Bearer prompt-secret"
                 }
                 val response = if (streaming) when (provider) {
-                    PostProcessingProvider.GOOGLE -> "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"result\"}]},\"finishReason\":\"STOP\"}]}\n\n"
+                    PostProcessingProvider.GOOGLE, PostProcessingProvider.VERTEX_AI -> "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"result\"}]},\"finishReason\":\"STOP\"}]}\n\n"
                     PostProcessingProvider.ANTHROPIC -> "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"result\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
-                    PostProcessingProvider.OPENAI_RESPONSES -> "data: {\"type\":\"response.completed\",\"response\":{\"output_text\":\"result\"}}\n\n"
+                    PostProcessingProvider.OPENAI_RESPONSES, PostProcessingProvider.AZURE_OPENAI_RESPONSES,
+                    PostProcessingProvider.VOLCENGINE_ARK_RESPONSES -> "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output_text\":\"result\"}}\n\n"
+                    PostProcessingProvider.QWEN_TEXT, PostProcessingProvider.QWEN_MULTIMODAL -> "data: {\"output\":{\"choices\":[{\"message\":{\"content\":\"result\"},\"finish_reason\":\"stop\"}]}}\n\n"
                     else -> "data: {\"choices\":[{\"delta\":{\"content\":\"result\"}}]}\n\ndata: [DONE]\n\n"
                 } else when (provider) {
-                    PostProcessingProvider.GOOGLE -> """{"candidates":[{"content":{"parts":[{"text":"result"}]}}]}"""
+                    PostProcessingProvider.GOOGLE, PostProcessingProvider.VERTEX_AI -> """{"candidates":[{"content":{"parts":[{"text":"result"}]},"finishReason":"STOP"}]}"""
                     PostProcessingProvider.ANTHROPIC -> """{"content":[{"type":"text","text":"result"}]}"""
-                    PostProcessingProvider.OPENAI_RESPONSES -> """{"output_text":"result"}"""
+                    PostProcessingProvider.OPENAI_RESPONSES, PostProcessingProvider.AZURE_OPENAI_RESPONSES,
+                    PostProcessingProvider.VOLCENGINE_ARK_RESPONSES -> """{"status":"completed","output_text":"result"}"""
+                    PostProcessingProvider.QWEN_TEXT, PostProcessingProvider.QWEN_MULTIMODAL -> """{"output":{"choices":[{"message":{"content":"result"},"finish_reason":"stop"}]}}"""
                     else -> """{"choices":[{"message":{"content":"result"}}]}"""
                 }
                 val captured = server.respond(200, response,
                     contentType = if (streaming) "text/event-stream" else "application/json")
-                val prompt = PromptConfig(provider = provider, baseUrl = server.url, model = "independent-model",
+                val baseUrl = if (provider == PostProcessingProvider.VERTEX_AI) {
+                    "${server.url}/v1/projects/project/locations/global/publishers/google"
+                } else server.url
+                val prompt = PromptConfig(provider = provider, baseUrl = baseUrl, model = "independent-model",
                     prompt = "Summarize", additionalJson = """{"stream":$streaming,"temperature":0.25}""")
                 val api = prompt.effectiveApi(PostProcessingConfig(baseUrl = "https://main.example", model = "main-model"),
                     "main-secret", "prompt-secret")
@@ -65,7 +82,7 @@ class PostProcessingClientTest {
                 val body = JSONObject(payload)
                 assertEquals(streaming, body.getBoolean("stream"))
                 assertEquals(0.25, body.getDouble("temperature"), 0.0)
-                if (provider == PostProcessingProvider.GOOGLE) assertFalse(body.has("model"))
+                if (provider == PostProcessingProvider.GOOGLE || provider == PostProcessingProvider.VERTEX_AI) assertFalse(body.has("model"))
                 else assertEquals("independent-model", body.getString("model"))
             }
         }
@@ -119,6 +136,37 @@ class PostProcessingClientTest {
                 assertTrue(body.contains("name=\"generation\"\r\n\r\n{\"on\":true}\r\n"))
                 assertTrue(body.contains("name=\"array\"\r\n\r\n[1,2]\r\n"))
                 assertFalse(body.contains("name=\"removed\""))
+            }
+        } finally {
+            audio.delete()
+        }
+    }
+
+    @Test
+    fun transcriptionNoWordsResponseIsAnEmptySuccess() {
+        val context: android.content.Context = RuntimeEnvironment.getApplication()
+        val audio = File.createTempFile("network-test-", ".wav", context.cacheDir).apply {
+            writeBytes(byteArrayOf(1, 2, 3, 4))
+        }
+        try {
+            TestServer().use { server ->
+                val captured = server.respond(400, """{"message":"ASR_RESPONSE_HAVE_NO_WORDS"}""")
+                val result = TranscriptionClient(Diagnostics(context)).transcribe(
+                    1,
+                    TranscriptionClient.Request(
+                        endpoint = "${server.url}/v1/audio/transcriptions",
+                        apiKey = "key",
+                        model = "default",
+                        additionalFields = linkedMapOf(),
+                        audioFile = audio,
+                        mimeType = "audio/wav",
+                    ),
+                )
+                assertTrue(result is TranscriptionClient.Result.Success)
+                result as TranscriptionClient.Result.Success
+                assertEquals("", result.text)
+                assertEquals(400, result.statusCode)
+                captured.get(3, TimeUnit.SECONDS)
             }
         } finally {
             audio.delete()

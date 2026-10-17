@@ -63,6 +63,13 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
             val statusCode: Int? = null,
             val elapsedMillis: Long,
             val serverSummary: String = "",
+            /**
+             * Whether this is a completed service/transport failure that may
+             * be represented by an inserted audio placeholder. The batch
+             * dispatcher marks escaped implementation failures false so they
+             * remain ordinary task errors.
+             */
+            val placeholderEligible: Boolean = true,
         ) : Result
 
         data object Cancelled : Result
@@ -113,8 +120,8 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
          * Stops currently open HTTP connections and prevents a sibling that
          * has not registered its connection yet from starting one.  This
          * batch-local abort intentionally does not change
-         * [isCancellationRequested], because the first segment failure must
-         * remain reportable unless the parent job itself was cancelled.
+         * [isCancellationRequested], because only a true parent cancellation
+         * may suppress a completed segment outcome.
          */
         fun cancelInFlightOperations() {
             batchAborted.set(true)
@@ -324,6 +331,13 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
             if (isCancelled()) return Result.Cancelled
 
             if (status !in 200..299) {
+                if (isNoWordsResponse(status, responseBody)) {
+                    diagnostics.info(
+                        "http",
+                        "job=${operation.parentJobId} request=${operation.requestId} status=$status elapsed=${elapsed}ms outcome=no-speech",
+                    )
+                    return Result.Success("", status, elapsed)
+                }
                 val summary = diagnostics.sanitize(
                     responseBody,
                     MAX_SERVER_SUMMARY,
@@ -526,6 +540,27 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
         return value
     }
 
+    /**
+     * Some ASR services use this exact HTTP 400 response to report a completed
+     * recognition with no valid words. It is an empty transcription, not a
+     * transport or provider failure. Keep the match deliberately narrow so
+     * other HTTP 400 responses still surface normally.
+     */
+    private fun isNoWordsResponse(status: Int, body: String): Boolean {
+        if (status != HttpURLConnection.HTTP_BAD_REQUEST) return false
+        val root = runCatching { JSONObject(body) }.getOrNull() ?: return false
+        if (hasNoWordsCode(root)) return true
+        return when (val error = root.opt("error")) {
+            is String -> error == ASR_RESPONSE_HAVE_NO_WORDS
+            is JSONObject -> hasNoWordsCode(error)
+            else -> false
+        }
+    }
+
+    private fun hasNoWordsCode(value: JSONObject): Boolean =
+        listOf("code", "message", "info", "detail")
+            .any { field -> value.opt(field) == ASR_RESPONSE_HAVE_NO_WORDS }
+
     private fun failure(
         kind: FailureKind,
         message: String,
@@ -622,6 +657,7 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
         const val FILE_BUFFER_SIZE = 16 * 1024
         const val MAX_RESPONSE_BYTES = 2 * 1024 * 1024
         const val MAX_SERVER_SUMMARY = 2_000
+        const val ASR_RESPONSE_HAVE_NO_WORDS = "ASR_RESPONSE_HAVE_NO_WORDS"
     }
 }
 

@@ -46,12 +46,17 @@ class PromptProviderSettingsTest {
 
     @Test fun everyProviderRoundTripsAndExportsOmitEvenInactiveSecrets() {
         val repository = SettingsRepository(context)
-        val prompts = PostProcessingProvider.entries.map { prompt.copy(id = it.name, provider = it) } + prompt.copy(provider = null)
+        val prompts = PostProcessingProvider.entries.map { prompt.copy(id = it.id, provider = it) } + prompt.copy(provider = null)
         background { repository.savePrompts(prompts, prompts.associate { it.id to "private-${it.id}" }) }
         val json = repository.exportJson()
         assertEquals(8, JSONObject(json).getInt("schemaVersion"))
         assertFalse(json.contains("private-"))
         assertFalse(json.contains("apiKey"))
+        val serializedProviders = JSONObject(json).getJSONObject("postProcessing").getJSONArray("prompts")
+        assertEquals(
+            PostProcessingProvider.entries.map { it.id },
+            List(PostProcessingProvider.entries.size) { index -> serializedProviders.getJSONObject(index).getString("provider") },
+        )
         val preview = repository.previewImport(json)
         assertEquals(prompts, preview.settings.postProcessing.prompts)
         assertFalse(preview.hasApiKeys)
@@ -78,7 +83,7 @@ class PromptProviderSettingsTest {
         background { repository.applyImport(preview("baseUrl", "https://different.example"), false) }
         assertEquals("", repository.promptApiKey(prompt.id))
         background { repository.savePrompts(listOf(prompt), mapOf(prompt.id to "restored-secret")) }
-        background { repository.applyImport(preview("provider", "ANTHROPIC"), false) }
+        background { repository.applyImport(preview("provider", PostProcessingProvider.ANTHROPIC.id), false) }
         assertEquals("", repository.promptApiKey(prompt.id))
         background { repository.savePrompts(listOf(prompt), mapOf(prompt.id to "restored-secret")) }
         background { repository.applyImport(preview("id", "new-id"), false) }

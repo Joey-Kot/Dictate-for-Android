@@ -65,6 +65,8 @@ class AdvancedAudioClient(
             val message: String,
             val statusCode: Int? = null,
             val elapsedMillis: Long,
+            /** Safe to represent as an inserted terminal ASR placeholder. */
+            val placeholderEligible: Boolean = false,
         ) : Result
 
         data class Cancelled(val elapsedMillis: Long) : Result
@@ -209,11 +211,24 @@ class AdvancedAudioClient(
         } catch (_: RemoteAudioException.Cancelled) {
             Result.Cancelled(elapsedMillis())
         } catch (error: AdvancedAudioExecutionException) {
-            Result.Failure(error.message ?: GENERIC_FAILURE_MESSAGE, error.statusCode, elapsedMillis())
+            Result.Failure(
+                message = error.message ?: GENERIC_FAILURE_MESSAGE,
+                statusCode = error.statusCode,
+                elapsedMillis = elapsedMillis(),
+                placeholderEligible = error.isTerminalRequestFailure(),
+            )
         } catch (error: RemoteAudioException) {
-            Result.Failure(error.message ?: GENERIC_FAILURE_MESSAGE, null, elapsedMillis())
+            Result.Failure(
+                message = error.message ?: GENERIC_FAILURE_MESSAGE,
+                elapsedMillis = elapsedMillis(),
+                placeholderEligible = error.isTerminalRequestFailure(),
+            )
         } catch (error: HttpTransportException) {
-            Result.Failure(safeTransportMessage(error), null, elapsedMillis())
+            Result.Failure(
+                message = safeTransportMessage(error),
+                elapsedMillis = elapsedMillis(),
+                placeholderEligible = error.isTerminalRequestFailure(),
+            )
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             Result.Cancelled(elapsedMillis())
@@ -776,4 +791,53 @@ sealed class AdvancedAudioExecutionException(
 
     data class PollTimeout(val timeoutMs: Long) :
         AdvancedAudioExecutionException("Asynchronous recognition task timed out after $timeoutMs ms")
+
+    fun isTerminalRequestFailure(): Boolean = when (this) {
+        is UnexpectedStatus,
+        is Extraction,
+        is StreamFailure,
+        StreamTooLarge,
+        PollFailure,
+        PollUnexpectedState,
+        is PollTimeout,
+        -> true
+
+        Disabled,
+        MissingWorkflow,
+        InvalidWorkflow,
+        InvalidConfiguration,
+        -> false
+    }
+}
+
+private fun HttpTransportException.isTerminalRequestFailure(): Boolean = when (this) {
+    is HttpTransportException.NetworkFailure,
+    is HttpTransportException.ResponseReadFailure,
+    is HttpTransportException.ResponseTooLarge,
+    -> true
+
+    is HttpTransportException.Cancelled,
+    is HttpTransportException.InvalidUrl,
+    is HttpTransportException.InvalidRequest,
+    is HttpTransportException.InvalidMediaType,
+    is HttpTransportException.AudioFileUnavailable,
+    is HttpTransportException.SignerRequiresMaterializedBody,
+    is HttpTransportException.SigningFailed,
+    is HttpTransportException.ResponseAlreadyConsumed,
+    -> false
+}
+
+private fun RemoteAudioException.isTerminalRequestFailure(): Boolean = when (this) {
+    RemoteAudioException.RequestFailed,
+    is RemoteAudioException.UploadFailed,
+    -> true
+
+    RemoteAudioException.NotConfigured,
+    RemoteAudioException.IncompatibleDelivery,
+    RemoteAudioException.InvalidConfiguration,
+    RemoteAudioException.MissingCredentials,
+    RemoteAudioException.AudioUnavailable,
+    RemoteAudioException.Cancelled,
+    RemoteAudioException.CleanupFailed,
+    -> false
 }

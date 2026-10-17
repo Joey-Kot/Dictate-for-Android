@@ -44,6 +44,7 @@ class AdvancedAudioClientTest {
             val result = run(workflowConfig(asyncRecognition()), transport, audio, retrying())
 
             assertTrue(result is AdvancedAudioClient.Result.Failure)
+            assertTrue((result as AdvancedAudioClient.Result.Failure).placeholderEligible)
             assertEquals(1, transport.requests.count { it.url.endsWith("/submit") })
             assertEquals(1, transport.requests.size)
         }

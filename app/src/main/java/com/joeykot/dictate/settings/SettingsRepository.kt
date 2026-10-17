@@ -140,10 +140,8 @@ class SettingsRepository(context: Context) {
                 ),
             ).normalized(),
             postProcessing = PostProcessingConfig(
-                provider = enumValueOrDefault(
-                    preferences.getString(KEY_POST_PROVIDER, null),
-                    PostProcessingProvider.OPENAI_COMPATIBLE,
-                ),
+                provider = PostProcessingProvider.fromId(preferences.getString(KEY_POST_PROVIDER, null))
+                    ?: PostProcessingProvider.OPENAI_COMPATIBLE,
                 baseUrl = preferences.getString(KEY_POST_BASE_URL, "").orEmpty(),
                 model = preferences.getString(KEY_POST_MODEL, "").orEmpty(),
                 prompts = preferences.getString(KEY_PROMPTS, null)?.let { json ->
@@ -184,10 +182,17 @@ class SettingsRepository(context: Context) {
         postProcessingApiKey: String = secureApiKeyStore.getPostProcessing(),
         promptApiKeys: Map<String, String> = emptyMap(),
         advancedAudioSecrets: Map<String, String>? = null,
+        // Exports deliberately omit Advanced Audio credentials. Imports may
+        // therefore persist an enabled workflow before its keys are entered.
+        allowMissingAdvancedAudioSecrets: Boolean = false,
     ) {
         check(Looper.myLooper() != Looper.getMainLooper()) { AppStrings.get(R.string.settings_write_thread, "Settings cannot be written on the main thread") }
         val effectiveAdvancedSecrets = advancedAudioSecrets ?: secureApiKeyStore.getAdvancedSecrets()
-        val errors = validate(settings, effectiveAdvancedSecrets)
+        val errors = validate(
+            settings,
+            effectiveAdvancedSecrets,
+            allowMissingAdvancedAudioSecrets = allowMissingAdvancedAudioSecrets,
+        )
         require(errors.isEmpty()) { errors.joinToString("；") }
         val previousIconNames = storedIconNames()
 
@@ -206,7 +211,7 @@ class SettingsRepository(context: Context) {
             .putString(KEY_BASE_URL, normalized.provider.baseUrl.trim())
             .putString(KEY_MODEL, normalized.provider.model.trim())
             .putString(KEY_ADDITIONAL_JSON, normalized.provider.additionalJson.trim())
-            .putString(KEY_POST_PROVIDER, normalized.postProcessing.provider.name)
+            .putString(KEY_POST_PROVIDER, normalized.postProcessing.provider.id)
             .putString(KEY_POST_BASE_URL, normalized.postProcessing.baseUrl.trim())
             .putString(KEY_POST_MODEL, normalized.postProcessing.model.trim())
             .putString(KEY_PROMPTS, PostProcessingSettingsCodec.encodePrompts(normalized.postProcessing.prompts).toString())
@@ -306,6 +311,7 @@ class SettingsRepository(context: Context) {
     fun validate(
         settings: AppSettings,
         advancedAudioSecrets: Map<String, String> = secureApiKeyStore.getAdvancedSecrets(),
+        allowMissingAdvancedAudioSecrets: Boolean = false,
     ): List<String> = buildList {
         addAll(settings.audio.validate())
         addAll(settings.retry.validate())
@@ -333,18 +339,27 @@ class SettingsRepository(context: Context) {
             }
         }
         addAll(PostProcessingSettingsCodec.validatePrompts(settings.postProcessing.prompts))
-        addAll(validateAdvancedAudio(settings.advancedAudio, advancedAudioSecrets))
+        addAll(
+            validateAdvancedAudio(
+                settings.advancedAudio,
+                advancedAudioSecrets,
+                allowMissingSecrets = allowMissingAdvancedAudioSecrets,
+            ),
+        )
     }
 
     /**
-     * Enabled Advanced Audio configurations must be runnable before they can
-     * become durable.  Disabled drafts intentionally retain the old relaxed
-     * policy, except for URL user-info which would otherwise leak credentials
-     * into plain preferences and export files.
+     * Enabled Advanced Audio configurations must normally be runnable before
+     * they can become durable. Imports are the narrow exception: exports omit
+     * credentials, so import validation accepts absent secrets without ever
+     * storing a substitute. Disabled drafts retain the relaxed policy, except
+     * for URL user-info which would otherwise leak credentials into plain
+     * preferences and export files.
      */
     private fun validateAdvancedAudio(
         config: AdvancedAudioConfig,
         secrets: Map<String, String>,
+        allowMissingSecrets: Boolean = false,
     ): List<String> = buildList {
         addAll(RemoteAudioConfigValidator.validateStoredConfiguration(config.remoteAudio).map { it.toString() })
         if (!config.enabled) return@buildList
@@ -360,8 +375,24 @@ class SettingsRepository(context: Context) {
             add("ADVANCED_AUDIO_API.workflow: ${error.message ?: "is invalid"}")
             return@buildList
         }
+        val validationSecrets = if (allowMissingSecrets) {
+            secrets.toMutableMap().apply {
+                workflow.secrets.filter { it.required }.forEach { secret ->
+                    if (this[secret.id].isNullOrBlank()) {
+                        this[secret.id] = IMPORT_MISSING_SECRET_PLACEHOLDER
+                    }
+                }
+                RemoteAudioCredentialIds.forConfig(config.remoteAudio).forEach { secretId ->
+                    if (this[secretId].isNullOrBlank()) {
+                        this[secretId] = IMPORT_MISSING_SECRET_PLACEHOLDER
+                    }
+                }
+            }
+        } else {
+            secrets
+        }
         val remoteCredentialIds = RemoteAudioCredentialIds.forConfig(config.remoteAudio)
-        val workflowSecrets = secrets.filterKeys { id ->
+        val workflowSecrets = validationSecrets.filterKeys { id ->
             id !in remoteCredentialIds && workflow.secrets.any { it.id == id }
         }
         addAll(
@@ -372,7 +403,7 @@ class SettingsRepository(context: Context) {
             RemoteAudioConfigValidator.validate(
                 config = config.remoteAudio,
                 delivery = workflow.audio.delivery,
-                secrets = secrets,
+                secrets = validationSecrets,
             ).map { it.toString() },
         )
     }.distinct()
@@ -623,7 +654,11 @@ class SettingsRepository(context: Context) {
             get().advancedAudio == advancedAudio -> secureApiKeyStore.getAdvancedSecrets()
             else -> emptyMap()
         }
-        val errors = validate(imported, advancedSecretsForValidation)
+        val errors = validate(
+            imported,
+            advancedSecretsForValidation,
+            allowMissingAdvancedAudioSecrets = true,
+        )
         if (errors.isNotEmpty()) throw IllegalArgumentException(errors.joinToString("；"))
 
         return ImportPreview(
@@ -649,7 +684,11 @@ class SettingsRepository(context: Context) {
             currentSettings.advancedAudio == preview.settings.advancedAudio -> secureApiKeyStore.getAdvancedSecrets()
             else -> emptyMap()
         }
-        val errors = validate(preview.settings, advancedSecrets)
+        val errors = validate(
+            preview.settings,
+            advancedSecrets,
+            allowMissingAdvancedAudioSecrets = true,
+        )
         require(errors.isEmpty()) { errors.joinToString("；") }
         val currentPrompts = currentSettings.postProcessing.prompts.associateBy { it.id }
         val promptKeys = preview.settings.postProcessing.prompts.associate { prompt ->
@@ -673,6 +712,7 @@ class SettingsRepository(context: Context) {
                 preview.postProcessingApiKey ?: secureApiKeyStore.getPostProcessing(),
                 promptKeys,
                 advancedSecrets,
+                allowMissingAdvancedAudioSecrets = true,
             )
         } catch (error: Exception) {
             installedIcons.values.forEach { File(iconDirectory, it).delete() }
@@ -817,6 +857,9 @@ class SettingsRepository(context: Context) {
     )
 
     private companion object {
+        // Used only while validating a credential-free import. It is never
+        // persisted, returned, or sent to a provider.
+        const val IMPORT_MISSING_SECRET_PLACEHOLDER = "__dictate_import_missing_secret__"
         const val PREFS_NAME = "settings"
         const val KEY_BIT_DEPTH = "audio.bit_depth"
         const val KEY_SAMPLE_RATE = "audio.sample_rate"

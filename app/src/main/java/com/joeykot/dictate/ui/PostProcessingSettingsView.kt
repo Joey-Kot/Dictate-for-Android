@@ -131,7 +131,7 @@ class PostProcessingSettingsView(
             title = state.getString("title").orEmpty(),
             prompt = state.getString("prompt").orEmpty(),
             additionalJson = state.getString("json").orEmpty(),
-            provider = PostProcessingProvider.entries.find { it.name == state.getString("provider") },
+            provider = PostProcessingProvider.fromId(state.getString("provider")),
             baseUrl = state.getString("baseUrl").orEmpty(),
             model = state.getString("model").orEmpty(),
         )
@@ -367,7 +367,7 @@ class PostProcessingSettingsView(
                 putString("title", title.text.toString())
                 putString("prompt", prompt.text.toString())
                 putString("json", json.text.toString())
-                putString("provider", apiDraft().provider?.name)
+                putString("provider", apiDraft().provider?.id)
                 putString("baseUrl", baseUrl.text.toString())
                 putString("apiKey", apiKey.text.toString())
                 putString("model", model.text.toString())

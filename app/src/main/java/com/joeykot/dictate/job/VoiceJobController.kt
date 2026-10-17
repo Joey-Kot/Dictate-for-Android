@@ -37,6 +37,7 @@ import com.joeykot.dictate.audio.SegmentedUploadSnapshot
 import com.joeykot.dictate.audio.SegmentedUploadSnapshotCodec
 import com.joeykot.dictate.advanced_audio.realtime.LivePcmTeeSource
 import com.joeykot.dictate.advanced_audio.realtime.Pcm16ReplayChunkSource
+import com.joeykot.dictate.advanced_audio.realtime.RealtimeSessionException
 import com.joeykot.dictate.advanced_audio.realtime.RealtimeSessionResult
 import com.joeykot.dictate.advanced_audio.realtime.RealtimeSessionRunner
 import com.joeykot.dictate.R
@@ -57,6 +58,7 @@ import com.joeykot.dictate.settings.SettingsRepository
 import com.joeykot.dictate.ui.MainActivity
 import com.joeykot.dictate.util.AudioFileStore
 import com.joeykot.dictate.util.Diagnostics
+import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.ConcurrentHashMap
@@ -69,6 +71,24 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.time.Instant
 import java.util.UUID
+
+/**
+ * Realtime replay errors have already been classified by the websocket
+ * runner. Only remote or protocol failures are safe to turn into a visible
+ * result; local configuration, audio-source, and cancellation failures must
+ * remain ordinary job failures.
+ */
+internal fun realtimeFailurePlaceholder(failure: Throwable?): String? = when (failure) {
+    RealtimeSessionException.WebSocketConnectionFailed -> "[Network connection failed]"
+    RealtimeSessionException.WebSocketSendReceiveFailed -> "[Network request failed]"
+    RealtimeSessionException.InvalidIncomingJsonOrText,
+    RealtimeSessionException.ConnectionClosedBeforeCompletion,
+    RealtimeSessionException.StreamProtocolEventFailed,
+    RealtimeSessionException.LiveCompletedBeforeSourceEnd -> "[Invalid ASR response]"
+
+    RealtimeSessionException.FinalizationTimeout -> "[Network timeout]"
+    else -> null
+}
 
 class VoiceJobController(
     private val application: DictateApplication,
@@ -1196,37 +1216,46 @@ class VoiceJobController(
                     },
                     cancelInFlight = cancelInFlight,
                     execute = { item ->
-                        if (isSegmentedUploadCancellationRequested(job) || session.isCancellationRequested()) {
-                            SegmentedUploadBatchRunner.TaskResult.Cancelled
-                        } else {
-                            val operation = session.newOperationId()
-                            when (val response = session.transcribe(operation, template.copy(audioFile = item.value))) {
-                                is TranscriptionClient.Result.Success -> {
-                                    successes[item.index] = response
-                                    SegmentedUploadBatchRunner.TaskResult.Success(response.text)
-                                }
-
-                                is TranscriptionClient.Result.Failure ->
-                                    SegmentedUploadBatchRunner.TaskResult.Failure(response)
-
-                                TranscriptionClient.Result.Cancelled -> SegmentedUploadBatchRunner.TaskResult.Cancelled
-                            }
-                        }
+                        runSegmentedLegacyRequestWithRetry(
+                            job = job,
+                            runtime = runtime,
+                            session = session,
+                            request = template.copy(audioFile = item.value),
+                            segmentIndex = item.index,
+                            successes = successes,
+                        )
                     },
                 )
             ) {
-                is SegmentedUploadBatchRunner.Result.Success -> {
+                is SegmentedUploadBatchRunner.Result.Completed -> {
+                    val text = StringBuilder()
+                    for (outcome in result.outcomes) {
+                        when (val outcomeResult = outcome.result) {
+                            is SegmentedUploadBatchRunner.TaskResult.Success -> text.append(outcomeResult.text)
+                            is SegmentedUploadBatchRunner.TaskResult.Failure -> {
+                                if (job.mode.connectionTest) {
+                                    return SegmentedRequestResult.Legacy(outcomeResult.error)
+                                }
+                                val placeholder = legacyFailurePlaceholder(outcomeResult.error, runtime)
+                                    ?: return SegmentedRequestResult.Legacy(outcomeResult.error)
+                                text.append(placeholder)
+                            }
+
+                            SegmentedUploadBatchRunner.TaskResult.Cancelled -> {
+                                return SegmentedRequestResult.Cancelled
+                            }
+                        }
+                    }
                     val final = successes[upload.files.lastIndex]
                     SegmentedRequestResult.Legacy(
                         TranscriptionClient.Result.Success(
-                            text = result.text,
+                            text = text.toString(),
                             statusCode = final?.statusCode ?: 200,
                             elapsedMillis = elapsedMillis(startedAt),
                         ),
                     )
                 }
 
-                is SegmentedUploadBatchRunner.Result.Failure -> SegmentedRequestResult.Legacy(result.error)
                 SegmentedUploadBatchRunner.Result.Cancelled -> SegmentedRequestResult.Cancelled
                 SegmentedUploadBatchRunner.Result.Empty,
                 SegmentedUploadBatchRunner.Result.InvalidConcurrency,
@@ -1251,6 +1280,7 @@ class VoiceJobController(
                             ),
                         ),
                         retryable = false,
+                        placeholderEligible = false,
                     ),
                 )
             }
@@ -1258,6 +1288,69 @@ class VoiceJobController(
             job.segmentedCancelInFlight.compareAndSet(cancelInFlight, null)
             session.close()
         }
+    }
+
+    private fun runSegmentedLegacyRequestWithRetry(
+        job: ActiveJob,
+        runtime: RuntimeSettings,
+        session: TranscriptionClient.JobSession,
+        request: TranscriptionClient.Request,
+        segmentIndex: Int,
+        successes: ConcurrentHashMap<Int, TranscriptionClient.Result.Success>,
+    ): SegmentedUploadBatchRunner.TaskResult<TranscriptionClient.Result.Failure> {
+        val retry = runtime.app.retry
+        var retries = 0
+        while (true) {
+            if (isSegmentedUploadCancellationRequested(job) || session.isCancellationRequested()) {
+                return SegmentedUploadBatchRunner.TaskResult.Cancelled
+            }
+            val response = session.transcribe(session.newOperationId(), request)
+            when (response) {
+                is TranscriptionClient.Result.Success -> {
+                    successes[segmentIndex] = response
+                    return SegmentedUploadBatchRunner.TaskResult.Success(response.text)
+                }
+
+                TranscriptionClient.Result.Cancelled -> {
+                    return SegmentedUploadBatchRunner.TaskResult.Cancelled
+                }
+
+                is TranscriptionClient.Result.Failure -> {
+                    if (!response.retryable || !retry.enabled || retries >= retry.maxRetries) {
+                        return SegmentedUploadBatchRunner.TaskResult.Failure(response)
+                    }
+                    retries += 1
+                    val delay = retry.delayMillis(retries)
+                    diagnostics.info(
+                        "segmented-upload",
+                        "job=${job.id} segment=$segmentIndex retry=$retries/${retry.maxRetries} delay=${delay}ms",
+                    )
+                    if (!waitForSegmentedRetry(job, session, delay)) {
+                        return SegmentedUploadBatchRunner.TaskResult.Cancelled
+                    }
+                }
+            }
+        }
+    }
+
+    private fun waitForSegmentedRetry(
+        job: ActiveJob,
+        session: TranscriptionClient.JobSession,
+        delayMillis: Long,
+    ): Boolean {
+        var remaining = delayMillis.coerceAtLeast(0L)
+        while (remaining > 0L) {
+            if (isSegmentedUploadCancellationRequested(job) || session.isCancellationRequested()) return false
+            val slice = minOf(remaining, SEGMENTED_RETRY_WAIT_SLICE_MILLIS)
+            try {
+                Thread.sleep(slice)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+            remaining -= slice
+        }
+        return !isSegmentedUploadCancellationRequested(job) && !session.isCancellationRequested()
     }
 
     private fun runSegmentedAdvancedRequests(
@@ -1315,18 +1408,35 @@ class VoiceJobController(
                     },
                 )
             ) {
-                is SegmentedUploadBatchRunner.Result.Success -> {
+                is SegmentedUploadBatchRunner.Result.Completed -> {
+                    val text = StringBuilder()
+                    for (outcome in result.outcomes) {
+                        when (val outcomeResult = outcome.result) {
+                            is SegmentedUploadBatchRunner.TaskResult.Success -> text.append(outcomeResult.text)
+                            is SegmentedUploadBatchRunner.TaskResult.Failure -> {
+                                if (job.mode.connectionTest) {
+                                    return SegmentedRequestResult.Advanced(outcomeResult.error)
+                                }
+                                val placeholder = advancedFailurePlaceholder(outcomeResult.error, runtime)
+                                    ?: return SegmentedRequestResult.Advanced(outcomeResult.error)
+                                text.append(placeholder)
+                            }
+
+                            SegmentedUploadBatchRunner.TaskResult.Cancelled -> {
+                                return SegmentedRequestResult.Cancelled
+                            }
+                        }
+                    }
                     val final = successes[upload.files.lastIndex]
                     SegmentedRequestResult.Advanced(
                         AdvancedAudioClient.Result.Success(
-                            text = result.text,
+                            text = text.toString(),
                             statusCode = final?.statusCode ?: 200,
                             elapsedMillis = elapsedMillis(startedAt),
                         ),
                     )
                 }
 
-                is SegmentedUploadBatchRunner.Result.Failure -> SegmentedRequestResult.Advanced(result.error)
                 SegmentedUploadBatchRunner.Result.Cancelled -> SegmentedRequestResult.Cancelled
                 SegmentedUploadBatchRunner.Result.Empty,
                 SegmentedUploadBatchRunner.Result.InvalidConcurrency,
@@ -1357,12 +1467,112 @@ class VoiceJobController(
         kind: TranscriptionClient.FailureKind,
         message: String,
         retryable: Boolean,
+        placeholderEligible: Boolean = kind != TranscriptionClient.FailureKind.CONFIGURATION,
     ): TranscriptionClient.Result.Failure = TranscriptionClient.Result.Failure(
         kind = kind,
         message = message,
         retryable = retryable,
         elapsedMillis = 0L,
+        placeholderEligible = placeholderEligible,
     )
+
+    private fun legacyFailurePlaceholder(
+        failure: TranscriptionClient.Result.Failure,
+        runtime: RuntimeSettings,
+    ): String? {
+        if (!failure.placeholderEligible) return null
+        val reason = when (failure.kind) {
+            TranscriptionClient.FailureKind.CONFIGURATION -> return null
+            TranscriptionClient.FailureKind.HTTP -> failure.statusCode
+                ?.let(::httpStatusText)
+                ?: "HTTP error"
+
+            TranscriptionClient.FailureKind.CONNECTION -> "Network connection failed"
+            TranscriptionClient.FailureKind.DNS -> "DNS lookup failed"
+            TranscriptionClient.FailureKind.TLS -> "TLS connection failed"
+            TranscriptionClient.FailureKind.CONNECT_TIMEOUT,
+            TranscriptionClient.FailureKind.WRITE_TIMEOUT,
+            TranscriptionClient.FailureKind.READ_TIMEOUT,
+            -> "Network timeout"
+
+            TranscriptionClient.FailureKind.SERVICE -> "ASR service failed"
+            TranscriptionClient.FailureKind.INVALID_RESPONSE -> "Invalid ASR response"
+            TranscriptionClient.FailureKind.IO -> "Network request failed"
+        }
+        val detail = failure.serverSummary
+            .takeIf { failure.kind == TranscriptionClient.FailureKind.HTTP }
+            ?.let(::jsonErrorDetail)
+            ?.let { diagnostics.sanitize(it, MAX_PLACEHOLDER_DETAIL_CHARS, listOf(runtime.apiKey)) }
+            ?.takeUnless { it == "[redacted]" }
+            ?.let(::compactPlaceholderDetail)
+        return placeholder(if (detail.isNullOrEmpty()) reason else "$reason: $detail")
+    }
+
+    private fun advancedFailurePlaceholder(
+        failure: AdvancedAudioClient.Result.Failure,
+        runtime: RuntimeSettings,
+    ): String? {
+        if (!failure.placeholderEligible) return null
+        val reason = failure.statusCode?.let(::httpStatusText)
+            ?: compactPlaceholderDetail(sanitizeAdvancedResult(runtime, failure.message))
+                .ifEmpty { "ASR request failed" }
+        return placeholder(reason)
+    }
+
+    private fun jsonErrorDetail(summary: String): String? {
+        val objectValue = runCatching { JSONObject(summary) }.getOrNull() ?: return null
+        val error = objectValue.opt("error")
+        if (error is String) return error
+        if (error is JSONObject) {
+            errorField(error)?.let { return it }
+        }
+        return errorField(objectValue)
+    }
+
+    private fun errorField(value: JSONObject): String? =
+        listOf("message", "info", "detail")
+            .asSequence()
+            .mapNotNull { field -> value.opt(field).takeIf { it is String } as? String }
+            .firstOrNull()
+
+    private fun compactPlaceholderDetail(value: String): String {
+        val compact = value
+            .map { character ->
+                if (character.isISOControl() || character == '[' || character == ']') ' ' else character
+            }
+            .joinToString(separator = "")
+            .trim()
+            .split(Regex("\\s+"))
+            .filter(String::isNotEmpty)
+            .joinToString(separator = " ")
+        return if (compact.length <= MAX_PLACEHOLDER_DETAIL_CHARS) compact else {
+            compact.take(MAX_PLACEHOLDER_DETAIL_CHARS) + "…"
+        }
+    }
+
+    private fun placeholder(reason: String): String = "[$reason]"
+
+    private fun httpStatusText(status: Int): String {
+        val reason = when (status) {
+            400 -> "Bad Request"
+            401 -> "Unauthorized"
+            403 -> "Forbidden"
+            404 -> "Not Found"
+            408 -> "Request Timeout"
+            409 -> "Conflict"
+            413 -> "Payload Too Large"
+            415 -> "Unsupported Media Type"
+            422 -> "Unprocessable Content"
+            429 -> "Too Many Requests"
+            500 -> "Internal Server Error"
+            501 -> "Not Implemented"
+            502 -> "Bad Gateway"
+            503 -> "Service Unavailable"
+            504 -> "Gateway Timeout"
+            else -> null
+        }
+        return reason?.let { "$status $it" } ?: "HTTP $status"
+    }
 
     private fun handleSegmentedRequestResult(jobId: Long, result: SegmentedRequestResult) {
         when (result) {
@@ -1379,6 +1589,26 @@ class VoiceJobController(
             completeJob(jobId, ConnectionTestResult(success = false, message = message))
         } else {
             finishFailure(jobId, message)
+        }
+    }
+
+    /** A completed remote ASR request can legitimately contain no recognizable words. */
+    private fun completeNoSpeech(jobId: Long, statusCode: Int? = null, elapsedMillis: Long? = null) {
+        val job = activeJob?.takeIf { it.id == jobId } ?: return
+        val message = AppStrings.get(R.string.runtime_no_speech_detected, "No speech detected")
+        if (job.mode.connectionTest) {
+            completeJob(
+                jobId,
+                ConnectionTestResult(
+                    success = true,
+                    statusCode = statusCode,
+                    elapsedMillis = elapsedMillis,
+                    message = message,
+                ),
+            )
+        } else {
+            completeJob(jobId)
+            updateUi(null, JobUiState(JobState.IDLE, message))
         }
     }
 
@@ -1603,7 +1833,7 @@ class VoiceJobController(
         if (replayCancellationWasRequested(recording, replay.cancellation) || failure is InterruptedException) return
         if (scheduleRealtimeReplayRetry(job, recording, replay)) return
 
-        val message = (failure as? com.joeykot.dictate.advanced_audio.realtime.RealtimeSessionException)
+        val message = (failure as? RealtimeSessionException)
             ?.message
             ?: ADVANCED_REALTIME_FAILURE_MESSAGE
         if (job.mode.connectionTest) {
@@ -1612,7 +1842,12 @@ class VoiceJobController(
                 ConnectionTestResult(success = false, elapsedMillis = elapsedMillis, message = message),
             )
         } else {
-            finishFailure(jobId, message)
+            val placeholder = realtimeFailurePlaceholder(failure)
+            if (placeholder == null) {
+                finishFailure(jobId, message)
+            } else {
+                deliverResult(jobId, placeholder)
+            }
         }
     }
 
@@ -1709,7 +1944,9 @@ class VoiceJobController(
         val runtime = job.runtimeSettings ?: return
         when (result) {
             is TranscriptionClient.Result.Success -> {
-                if (job.mode.connectionTest) {
+                if (!job.mode.postProcessing && result.text.isBlank()) {
+                    completeNoSpeech(jobId, result.statusCode, result.elapsedMillis)
+                } else if (job.mode.connectionTest) {
                     completeJob(
                         jobId,
                         ConnectionTestResult(
@@ -1762,8 +1999,17 @@ class VoiceJobController(
                             serverSummary = result.serverSummary,
                         ),
                     )
-                } else {
+                } else if (job.mode.postProcessing) {
+                    // A failed Rewrite must never replace the selected text
+                    // with an ASR placeholder.
                     finishFailure(jobId, result.message)
+                } else {
+                    val placeholder = legacyFailurePlaceholder(result, runtime)
+                    if (placeholder == null) {
+                        finishFailure(jobId, result.message)
+                    } else {
+                        deliverResult(jobId, placeholder)
+                    }
                 }
             }
             TranscriptionClient.Result.Cancelled -> Unit
@@ -1809,7 +2055,12 @@ class VoiceJobController(
                         ),
                     )
                 } else {
-                    finishFailure(jobId, message)
+                    val placeholder = advancedFailurePlaceholder(result, runtime)
+                    if (placeholder == null) {
+                        finishFailure(jobId, message)
+                    } else {
+                        deliverResult(jobId, placeholder)
+                    }
                 }
             }
 
@@ -2211,6 +2462,8 @@ class VoiceJobController(
         const val AMPLITUDE_INTERVAL_MS = 80L
         const val LIVE_REALTIME_TEE_CAPACITY = 128
         const val NANOS_PER_MILLISECOND = 1_000_000L
+        const val SEGMENTED_RETRY_WAIT_SLICE_MILLIS = 50L
+        const val MAX_PLACEHOLDER_DETAIL_CHARS = 160
         const val ADVANCED_REALTIME_FAILURE_MESSAGE = "Realtime transcription failed"
     }
 }

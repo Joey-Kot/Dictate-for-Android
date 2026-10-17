@@ -54,7 +54,7 @@ class SegmentedUploadBatchRunnerTest {
     }
 
     @Test
-    fun limitsCompleteWorkflowsAndConcatenatesCompletedTextInSourceOrder() {
+    fun limitsCompleteWorkflowsAndRetainsCompletedOutcomesInSourceOrder() {
         val runner = SegmentedUploadBatchRunner()
         val firstWaveStarted = CountDownLatch(2)
         val releaseFirstWave = CountDownLatch(1)
@@ -88,7 +88,12 @@ class SegmentedUploadBatchRunnerTest {
             releaseFirstWave.countDown()
 
             val result = future.get(3, TimeUnit.SECONDS)
-            assertEquals("0123", (result as SegmentedUploadBatchRunner.Result.Success).text)
+                as SegmentedUploadBatchRunner.Result.Completed
+            assertEquals(listOf(0, 1, 2, 3), result.outcomes.map { it.index })
+            assertEquals(
+                listOf("0", "1", "2", "3"),
+                result.outcomes.map { (it.result as SegmentedUploadBatchRunner.TaskResult.Success).text },
+            )
             assertTrue("peak=${peak.get()}", peak.get() <= 2)
         } finally {
             releaseFirstWave.countDown()
@@ -97,13 +102,12 @@ class SegmentedUploadBatchRunnerTest {
     }
 
     @Test
-    fun failureStopsNewWorkCancelsStartedSiblingsAndDrainsThem() {
+    fun terminalFailureRemainsInSourceOrderAndDoesNotCancelSiblings() {
         val runner = SegmentedUploadBatchRunner()
         val started = mutableListOf<Int>()
         val lock = Any()
         val initialTasksStarted = CountDownLatch(2)
         val releaseFailure = CountDownLatch(1)
-        val releaseSibling = CountDownLatch(1)
         val cancelCalls = AtomicInteger()
         val outer = Executors.newSingleThreadExecutor()
         try {
@@ -114,7 +118,6 @@ class SegmentedUploadBatchRunnerTest {
                     isParentCancellationRequested = { false },
                     cancelInFlight = {
                         cancelCalls.incrementAndGet()
-                        releaseSibling.countDown()
                     },
                 ) { item ->
                     synchronized(lock) { started += item.index }
@@ -127,11 +130,12 @@ class SegmentedUploadBatchRunnerTest {
 
                         1 -> {
                             initialTasksStarted.countDown()
-                            check(releaseSibling.await(3, TimeUnit.SECONDS))
-                            SegmentedUploadBatchRunner.TaskResult.Cancelled
+                            SegmentedUploadBatchRunner.TaskResult.Success("one")
                         }
 
-                        else -> error("A task was submitted after the first failure")
+                        2 -> SegmentedUploadBatchRunner.TaskResult.Success("two")
+
+                        else -> error("Unexpected segment")
                     }
                 }
             }
@@ -140,20 +144,24 @@ class SegmentedUploadBatchRunnerTest {
             releaseFailure.countDown()
             val result = future.get(3, TimeUnit.SECONDS)
 
-            result as SegmentedUploadBatchRunner.Result.Failure
-            assertEquals(0, result.index)
-            assertEquals("segment zero failed", result.error)
-            assertEquals(1, cancelCalls.get())
-            assertEquals(listOf(0, 1), synchronized(lock) { started.sorted() })
+            result as SegmentedUploadBatchRunner.Result.Completed
+            assertEquals(listOf(0, 1, 2), result.outcomes.map { it.index })
+            assertEquals(
+                "segment zero failed",
+                (result.outcomes[0].result as SegmentedUploadBatchRunner.TaskResult.Failure).error,
+            )
+            assertEquals("one", (result.outcomes[1].result as SegmentedUploadBatchRunner.TaskResult.Success).text)
+            assertEquals("two", (result.outcomes[2].result as SegmentedUploadBatchRunner.TaskResult.Success).text)
+            assertEquals(0, cancelCalls.get())
+            assertEquals(listOf(0, 1, 2), synchronized(lock) { started.sorted() })
         } finally {
             releaseFailure.countDown()
-            releaseSibling.countDown()
             outer.shutdownNow()
         }
     }
 
     @Test
-    fun realFailureOverridesSiblingCancellationThatCompletesFirst() {
+    fun aCancelledSegmentStopsDispatchAndCancelsSiblings() {
         val runner = SegmentedUploadBatchRunner()
         val tasksStarted = CountDownLatch(2)
         val releaseCancelledTask = CountDownLatch(1)
@@ -188,9 +196,7 @@ class SegmentedUploadBatchRunnerTest {
             releaseCancelledTask.countDown()
             val result = future.get(3, TimeUnit.SECONDS)
 
-            result as SegmentedUploadBatchRunner.Result.Failure
-            assertEquals(0, result.index)
-            assertEquals("actual failure", result.error)
+            assertEquals(SegmentedUploadBatchRunner.Result.Cancelled, result)
         } finally {
             releaseCancelledTask.countDown()
             releaseFailure.countDown()
@@ -231,8 +237,8 @@ class SegmentedUploadBatchRunnerTest {
             }
 
             assertTrue(tasksStarted.await(3, TimeUnit.SECONDS))
-            assertTrue(cancellationRequestedAfterFailure.await(3, TimeUnit.SECONDS))
             parentCancelled.set(true)
+            assertTrue(cancellationRequestedAfterFailure.await(3, TimeUnit.SECONDS))
             siblingReleased.countDown()
             assertEquals(SegmentedUploadBatchRunner.Result.Cancelled, future.get(3, TimeUnit.SECONDS))
         } finally {

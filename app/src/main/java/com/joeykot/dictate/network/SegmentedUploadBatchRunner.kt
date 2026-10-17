@@ -16,10 +16,9 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * This deliberately owns only dispatch semantics.  Callers retain ownership
  * of their parent-job cancellation source and use [cancelInFlight] to cancel
- * work that has already started.  That separation is important: a segment
- * failure must stop its siblings without turning the parent job into a user
- * cancellation, while a real parent cancellation takes priority over an
- * earlier segment failure.
+ * work that has already started. That separation lets terminal failures stay
+ * at their source position while a real parent cancellation takes priority
+ * over every completed result.
  */
 class SegmentedUploadBatchRunner(
     private val executorFactory: (Int) -> ExecutorService = { concurrency ->
@@ -44,16 +43,16 @@ class SegmentedUploadBatchRunner(
         data object Cancelled : TaskResult<Nothing>
     }
 
+    /** One terminal outcome, retained in original source-segment order. */
+    data class Outcome<out Failure>(
+        val index: Int,
+        val result: TaskResult<Failure>,
+    )
+
     /** The terminal result for the entire segment batch. */
     sealed interface Result<out Failure> {
-        /** All segments succeeded; [text] is concatenated in source order. */
-        data class Success(val text: String) : Result<Nothing>
-
-        /** The first non-cancellation segment failure. */
-        data class Failure<Failure>(
-            val index: Int,
-            val error: Failure,
-        ) : Result<Failure>
+        /** Every segment completed; callers preserve failures at their source position. */
+        data class Completed<Failure>(val outcomes: List<Outcome<Failure>>) : Result<Failure>
 
         /** A task escaped its expected result boundary. */
         data class UnexpectedFailure(
@@ -72,16 +71,15 @@ class SegmentedUploadBatchRunner(
     /**
      * Runs at most [maxConcurrency] complete segment workflows at a time.
      *
-     * On the first failure or cancellation it stops submitting new work,
-     * invokes [cancelInFlight] exactly once, and drains every already-started
-     * workflow before returning.  A true parent cancellation observed at any
-     * point wins over an earlier failure.  Successful text is never exposed
-     * unless every segment completed successfully.
+     * A terminal segment failure is retained alongside successful siblings,
+     * and work continues within [maxConcurrency]. Only cancellation and
+     * escaped task failures stop dispatch. A true parent cancellation wins
+     * over completed results.
      *
      * [isParentCancellationRequested] must describe only the parent job.  Do
      * not point it at an internal child source that [cancelInFlight] cancels
-     * after a segment failure, otherwise that failure would be misreported as
-     * a user cancellation.
+     * for any reason, otherwise ordinary work could be misreported as a user
+     * cancellation.
      */
     fun <Input, Failure> run(
         items: List<Item<Input>>,
@@ -101,13 +99,12 @@ class SegmentedUploadBatchRunner(
         val executor = executorFactory(maxConcurrency)
         val completions = ExecutorCompletionService<Completed<Failure>>(executor)
         val cancellationSignalled = AtomicBoolean(false)
-        val values = arrayOfNulls<String>(items.size)
+        val outcomes = arrayOfNulls<Outcome<Failure>>(items.size)
         var nextItem = 0
         var inFlight = 0
         var stopped = false
         var taskCancelled = false
         var interrupted = false
-        var firstFailure: Result.Failure<Failure>? = null
         var unexpectedFailure: Result.UnexpectedFailure? = null
 
         fun stopAndCancelInFlight() {
@@ -203,7 +200,7 @@ class SegmentedUploadBatchRunner(
 
                 val escaped = resolvedOutcome.escapedError
                 if (escaped != null) {
-                    if (firstFailure == null && unexpectedFailure == null) {
+                    if (unexpectedFailure == null) {
                         unexpectedFailure = Result.UnexpectedFailure(resolvedOutcome.itemIndex, escaped)
                     }
                     stopAndCancelInFlight()
@@ -211,12 +208,12 @@ class SegmentedUploadBatchRunner(
                 }
 
                 when (val result = requireNotNull(resolvedOutcome.result)) {
-                    is TaskResult.Success -> values[resolvedOutcome.listPosition] = result.text
+                    is TaskResult.Success -> {
+                        outcomes[resolvedOutcome.listPosition] = Outcome(resolvedOutcome.itemIndex, result)
+                    }
+
                     is TaskResult.Failure -> {
-                        if (firstFailure == null && unexpectedFailure == null) {
-                            firstFailure = Result.Failure(resolvedOutcome.itemIndex, result.error)
-                        }
-                        stopAndCancelInFlight()
+                        outcomes[resolvedOutcome.listPosition] = Outcome(resolvedOutcome.itemIndex, result)
                     }
 
                     TaskResult.Cancelled -> {
@@ -238,13 +235,9 @@ class SegmentedUploadBatchRunner(
         // so this check correctly gives a real user cancellation precedence.
         if (isParentCancellationRequested() || interrupted) return Result.Cancelled
         unexpectedFailure?.let { return it }
-        firstFailure?.let { return it }
         if (taskCancelled) return Result.Cancelled
 
-        // Every item has a success result at this point.  Keep the direct
-        // concatenation contract: no spaces, newlines, or punctuation are
-        // invented between independently recognized source segments.
-        return Result.Success(values.joinToString(separator = "") { requireNotNull(it) })
+        return Result.Completed(outcomes.map { requireNotNull(it) })
     }
 
     private data class Completed<Failure>(
