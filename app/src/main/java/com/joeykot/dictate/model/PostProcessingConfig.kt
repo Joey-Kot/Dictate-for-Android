@@ -119,7 +119,7 @@ enum class PostProcessingProvider(
 
 data class PromptConfig(
     val id: String = UUID.randomUUID().toString(),
-    val icon: String = "document",
+    val icon: String = "chat",
     val customIcon: String? = null,
     val title: String = "",
     val prompt: String = "",

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <!-- Fit the original SVG artwork proportionally, with a 4% transparent margin. -->
+    <group
+        android:scaleX="1.46947443"
+        android:scaleY="1.46947443"
+        android:translateX="-239.85656738"
+        android:translateY="-278.43029785">
+        <path
+            android:fillColor="#1E88E5"
+            android:pathData="M820.6 402.7H202.7c-6.4 0-11.6-5.2-11.6-11.6v-93.4c0-12.8 10.4-23.2 23.2-23.2H809c12.8 0 23.2 10.4 23.2 23.2v93.4c0 6.4-5.2 11.6-11.6 11.6z" />
+        <path
+            android:fillColor="#64B5F6"
+            android:pathData="M202.7 439h617.9c6.4 0 11.6 5.2 11.6 11.6v327.5c0 12.8-10.4 23.2-23.2 23.2H214.3c-12.8 0-23.2-10.4-23.2-23.2V450.6c0-6.4 5.2-11.6 11.6-11.6z" />
+    </group>
+</vector>

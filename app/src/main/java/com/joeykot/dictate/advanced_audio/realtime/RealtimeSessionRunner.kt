@@ -17,11 +17,14 @@ import com.joeykot.dictate.advanced_audio.RealtimeWorkflow
 import com.joeykot.dictate.advanced_audio.RuntimeTemplateValues
 import com.joeykot.dictate.advanced_audio.SignerConfig
 import com.joeykot.dictate.advanced_audio.StreamAction
+import com.joeykot.dictate.advanced_audio.isTranscriptText
 import com.joeykot.dictate.advanced_audio.StreamRule
 import com.joeykot.dictate.advanced_audio.TemplateContext
 import com.joeykot.dictate.advanced_audio.TranscriptAccumulator
 import com.joeykot.dictate.advanced_audio.TranscriptAccumulatorException
 import com.joeykot.dictate.advanced_audio.TypedTemplateRenderer
+import com.joeykot.dictate.network.hasNoWordsAsrCode
+import com.joeykot.dictate.network.isNoWordsAsrCode
 import com.joeykot.dictate.advanced_audio.WorkflowValidator
 import com.joeykot.dictate.advanced_audio.auth.AwsSigV4Signer
 import com.joeykot.dictate.advanced_audio.auth.HttpRequestSigner
@@ -291,7 +294,7 @@ class RealtimeSessionRunner(
             if (rule.event != null && rule.event != eventName) return@forEach
             val value = rule.path?.let { path ->
                 try {
-                    JsonPath.parse(path).extractOne(root)
+                    JsonPath.parse(path).extractOne(root, nullAsEmpty = rule.action.isTranscriptText)
                 } catch (_: JsonPathException.NoMatch) {
                     // Mixed event streams commonly omit another event's
                     // transcript field. That is a non-match, not an error.
@@ -301,6 +304,13 @@ class RealtimeSessionRunner(
                 }
             }
             if (rule.equals != null && value != rule.equals) return@forEach
+            if (rule.action == StreamAction.FAIL &&
+                (value?.let(::isNoWordsAsrCode) == true || hasNoWordsAsrCode(JsonValueCodec.stringify(root)))
+            ) {
+                accumulator.setFinalText("")
+                accumulator.complete()
+                return
+            }
             val action = when (rule.action) {
                 StreamAction.IGNORE -> com.joeykot.dictate.advanced_audio.TranscriptAction.Ignore
                 StreamAction.APPEND_DELTA -> com.joeykot.dictate.advanced_audio.TranscriptAction.AppendDelta(value.orEmpty())

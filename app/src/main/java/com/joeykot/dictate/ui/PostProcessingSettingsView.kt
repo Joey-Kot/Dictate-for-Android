@@ -126,7 +126,7 @@ class PostProcessingSettingsView(
     fun restoreEditorState(state: Bundle) {
         val initial = PromptConfig(
             id = state.getString("id") ?: return,
-            icon = state.getString("icon") ?: "document",
+            icon = state.getString("icon") ?: "chat",
             customIcon = state.getString("customIcon"),
             title = state.getString("title").orEmpty(),
             prompt = state.getString("prompt").orEmpty(),

@@ -17,6 +17,9 @@ import com.joeykot.dictate.advanced_audio.remote_audio.RemoteAudioPublisher
 import com.joeykot.dictate.model.AdvancedAudioConfig
 import com.joeykot.dictate.model.RemoteAudioCredentialIds
 import com.joeykot.dictate.model.RetryConfig
+import com.joeykot.dictate.network.hasNoWordsAsrCode
+import com.joeykot.dictate.network.isNoWordsAsrCode
+import com.joeykot.dictate.network.isNoWordsAsrResponse
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -154,41 +157,45 @@ class AdvancedAudioClient(
                     )
                 }
 
-                val completedRequest = when (val recognition = workflow.recognition) {
-                    is RequestRecognition -> {
-                        request.onPhase?.invoke(PHASE_REQUEST)
-                        val response = executeRetryableStage(
-                            stage = recognition.request,
-                            renderer = renderer,
-                            audio = audio,
-                            cancellation = cancellation,
-                            retry = request.retry,
-                            captures = ResponseCaptureCollector(),
-                        )
-                        CompletedRequest(extract(response, recognition.finalText), response.statusCode)
-                    }
+                val completedRequest = try {
+                    when (val recognition = workflow.recognition) {
+                        is RequestRecognition -> {
+                            request.onPhase?.invoke(PHASE_REQUEST)
+                            val response = executeRetryableStage(
+                                stage = recognition.request,
+                                renderer = renderer,
+                                audio = audio,
+                                cancellation = cancellation,
+                                retry = request.retry,
+                                captures = ResponseCaptureCollector(),
+                            )
+                            CompletedRequest(extract(response, recognition.finalText, transcript = true), response.statusCode)
+                        }
 
-                    is RequestStreamRecognition -> {
-                        request.onPhase?.invoke(PHASE_STREAM)
-                        executeRequestStream(
+                        is RequestStreamRecognition -> {
+                            request.onPhase?.invoke(PHASE_STREAM)
+                            executeRequestStream(
+                                recognition = recognition,
+                                renderer = renderer,
+                                audio = audio,
+                                cancellation = cancellation,
+                                retry = request.retry,
+                            )
+                        }
+
+                        is AsyncPollRecognition -> executeAsyncPoll(
                             recognition = recognition,
                             renderer = renderer,
                             audio = audio,
                             cancellation = cancellation,
                             retry = request.retry,
+                            onPhase = request.onPhase,
                         )
+
+                        is RealtimeSessionRecognition -> throw AdvancedAudioExecutionException.InvalidConfiguration
                     }
-
-                    is AsyncPollRecognition -> executeAsyncPoll(
-                        recognition = recognition,
-                        renderer = renderer,
-                        audio = audio,
-                        cancellation = cancellation,
-                        retry = request.retry,
-                        onPhase = request.onPhase,
-                    )
-
-                    is RealtimeSessionRecognition -> throw AdvancedAudioExecutionException.InvalidConfiguration
+                } catch (noSpeech: NoSpeechResponse) {
+                    CompletedRequest("", noSpeech.statusCode)
                 }
                 completed = true
                 afterRecognitionCompletedBeforeCleanupForTest?.invoke()
@@ -251,7 +258,7 @@ class AdvancedAudioClient(
         val captures = ResponseCaptureCollector()
         recognition.prepare?.let { prepare ->
             onPhase?.invoke(PHASE_PREPARE)
-            executeStage(prepare, renderer, audio, cancellation, captures, captureResponse = true)
+            executeStage(prepare, renderer, audio, cancellation, captures, captureResponse = true, allowNoSpeech = false)
         }
 
         // Submission is intentionally never retried. A lost response can
@@ -276,7 +283,7 @@ class AdvancedAudioClient(
                 executeStage(stage, renderer, audio, cancellation, captures, captureResponse = true)
             }
         }
-        return CompletedRequest(extract(response, recognition.finalText), response.statusCode)
+        return CompletedRequest(extract(response, recognition.finalText, transcript = true), response.statusCode)
     }
 
     private fun pollUntilTerminal(
@@ -315,7 +322,12 @@ class AdvancedAudioClient(
                     return response
                 }
 
-                PollState.FAILURE -> throw AdvancedAudioExecutionException.PollFailure
+                PollState.FAILURE -> {
+                    if (hasNoWordsAsrCode(response.body.toString(Charsets.UTF_8))) {
+                        throw NoSpeechResponse(response.statusCode)
+                    }
+                    throw AdvancedAudioExecutionException.PollFailure
+                }
                 PollState.PENDING -> {
                     val remaining = remainingMillisUntil(deadlineNanos)
                     if (remaining <= 0L) throw AdvancedAudioExecutionException.PollTimeout(poll.timeoutMs)
@@ -355,18 +367,25 @@ class AdvancedAudioClient(
         val spec = renderer.render(recognition.request, audio, captures.snapshot())
         val response = transport.execute(spec, cancellation)
         try {
-            if (response.statusCode !in recognition.request.acceptedStatuses) {
+            var bufferedBody: ByteArray? = null
+            if (response.statusCode == 400 || response.statusCode !in recognition.request.acceptedStatuses) {
                 val bounded = HttpResponseData(
                     statusCode = response.statusCode,
                     headers = response.headers,
                     body = response.readBody(),
                 )
-                throw AdvancedAudioExecutionException.UnexpectedStatus(bounded.statusCode)
+                if (isNoWordsAsrResponse(bounded.statusCode, bounded.body.toString(Charsets.UTF_8))) {
+                    return CompletedRequest("", bounded.statusCode)
+                }
+                if (response.statusCode !in recognition.request.acceptedStatuses) {
+                    throw AdvancedAudioExecutionException.UnexpectedStatus(bounded.statusCode)
+                }
+                bufferedBody = bounded.body
             }
             val headerView = HttpResponseData(response.statusCode, response.headers, ByteArray(0))
             storeCaptures(recognition.request, headerView, captures)
             val accumulator = TranscriptAccumulator()
-            response.openBodyStream().use { stream ->
+            (bufferedBody?.inputStream() ?: response.openBodyStream()).use { stream ->
                 consumeStream(stream, recognition.stream, accumulator, cancellation)
             }
             val text = try {
@@ -396,11 +415,11 @@ class AdvancedAudioClient(
                     if (count < 0) break
                     total = addStreamBytes(total, count)
                     decoder.push(buffer.copyOf(count)).forEach { event ->
-                        applyStreamRules(schema, event.event, event.data, accumulator)
+                        if (applyStreamRules(schema, event.event, event.data, accumulator) == StreamRuleResult.NO_SPEECH_COMPLETE) return
                     }
                 }
                 decoder.finish().forEach { event ->
-                    applyStreamRules(schema, event.event, event.data, accumulator)
+                    if (applyStreamRules(schema, event.event, event.data, accumulator) == StreamRuleResult.NO_SPEECH_COMPLETE) return
                 }
             }
 
@@ -411,11 +430,11 @@ class AdvancedAudioClient(
                     if (count < 0) break
                     total = addStreamBytes(total, count)
                     decoder.push(buffer.copyOf(count)).forEach { frame ->
-                        applyStreamRules(schema, null, frame.data, accumulator)
+                        if (applyStreamRules(schema, null, frame.data, accumulator) == StreamRuleResult.NO_SPEECH_COMPLETE) return
                     }
                 }
                 decoder.finish().forEach { frame ->
-                    applyStreamRules(schema, null, frame.data, accumulator)
+                    if (applyStreamRules(schema, null, frame.data, accumulator) == StreamRuleResult.NO_SPEECH_COMPLETE) return
                 }
             }
 
@@ -426,11 +445,11 @@ class AdvancedAudioClient(
                     if (count < 0) break
                     total = addStreamBytes(total, count)
                     decoder.push(buffer.copyOf(count)).forEach { json ->
-                        applyStreamRules(schema, null, json, accumulator)
+                        if (applyStreamRules(schema, null, json, accumulator) == StreamRuleResult.NO_SPEECH_COMPLETE) return
                     }
                 }
                 decoder.finish().forEach { json ->
-                    applyStreamRules(schema, null, json, accumulator)
+                    if (applyStreamRules(schema, null, json, accumulator) == StreamRuleResult.NO_SPEECH_COMPLETE) return
                 }
             }
         }
@@ -457,12 +476,12 @@ class AdvancedAudioClient(
         eventName: String?,
         data: String,
         accumulator: TranscriptAccumulator,
-    ) {
+    ): StreamRuleResult {
         schema.rules.forEach { rule ->
             if (rule.event != null && rule.event != eventName) return@forEach
             val value = rule.path?.let { path ->
                 try {
-                    extractJsonPath(data.toByteArray(Charsets.UTF_8), path)
+                    extractJsonPath(data.toByteArray(Charsets.UTF_8), path, nullAsEmpty = rule.action.isTranscriptText)
                 } catch (_: JsonPathEvaluationException.NoMatch) {
                     // Mixed event streams normally omit a rule's field in
                     // unrelated frames, so an absent path is not a failure.
@@ -480,11 +499,21 @@ class AdvancedAudioClient(
                 StreamAction.FAIL -> TranscriptAction.Fail(value ?: "server stream failure")
             }
             try {
+                if (rule.action == StreamAction.FAIL &&
+                    (value?.let(::isNoWordsAsrCode) == true || hasNoWordsAsrCode(data))
+                ) {
+                    accumulator.setFinalText("")
+                    accumulator.complete()
+                    // This terminal outcome stops the outer reader too; ordinary
+                    // complete actions still validate any subsequent events.
+                    return StreamRuleResult.NO_SPEECH_COMPLETE
+                }
                 accumulator.apply(action)
             } catch (error: TranscriptAccumulatorException) {
                 throw AdvancedAudioExecutionException.StreamFailure(error)
             }
         }
+        return StreamRuleResult.CONTINUE
     }
 
     private fun executeRetryableStage(
@@ -566,6 +595,7 @@ class AdvancedAudioClient(
         captures: ResponseCaptureCollector,
         captureResponse: Boolean,
         callTimeoutMillis: Long? = null,
+        allowNoSpeech: Boolean = true,
     ): HttpResponseData {
         cancellation.throwIfCancelled()
         val response = transport.executeAndRead(
@@ -573,6 +603,9 @@ class AdvancedAudioClient(
             cancellation,
             callTimeoutMillis = callTimeoutMillis,
         )
+        if (allowNoSpeech && isNoWordsAsrResponse(response.statusCode, response.body.toString(Charsets.UTF_8))) {
+            throw NoSpeechResponse(response.statusCode)
+        }
         if (response.statusCode !in stage.acceptedStatuses) {
             throw AdvancedAudioExecutionException.UnexpectedStatus(response.statusCode)
         }
@@ -591,12 +624,16 @@ class AdvancedAudioClient(
         captures.putStage(extracted)
     }
 
-    private fun extract(response: HttpResponseData, extractor: ResponseExtractor): String = try {
+    private fun extract(
+        response: HttpResponseData,
+        extractor: ResponseExtractor,
+        transcript: Boolean = false,
+    ): String = try {
         when (extractor) {
             is ResponseExtractor.JsonPath -> ResponseExtraction.jsonPath(
                 response,
                 extractor.path,
-                JsonPathScalarEvaluator(::extractJsonPath),
+                JsonPathScalarEvaluator { body, path -> extractJsonPath(body, path, nullAsEmpty = transcript) },
             )
 
             is ResponseExtractor.Header -> ResponseExtraction.header(response, extractor.name)
@@ -609,8 +646,8 @@ class AdvancedAudioClient(
         throw AdvancedAudioExecutionException.Extraction(error)
     }
 
-    private fun extractJsonPath(body: ByteArray, path: String): String = try {
-        JsonPath.extractOne(body, path)
+    private fun extractJsonPath(body: ByteArray, path: String, nullAsEmpty: Boolean = false): String = try {
+        JsonPath.extractOne(body, path, nullAsEmpty)
     } catch (error: JsonPathException) {
         throw when (error) {
             JsonPathException.InvalidPath -> JsonPathEvaluationException.InvalidPath
@@ -722,6 +759,13 @@ class AdvancedAudioClient(
         SUCCESS,
         FAILURE,
     }
+
+    private enum class StreamRuleResult {
+        CONTINUE,
+        NO_SPEECH_COMPLETE,
+    }
+
+    private class NoSpeechResponse(val statusCode: Int) : Exception()
 
     private data class CompletedRequest(
         val text: String,

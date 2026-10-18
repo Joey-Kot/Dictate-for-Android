@@ -174,6 +174,52 @@ class PostProcessingClientTest {
     }
 
     @Test
+    fun transcriptionAcceptsEmptyWhitespaceAndNullText() {
+        listOf("\"\"" to "", "\" \\t\\n\"" to " \t\n", "null" to "").forEach { (field, expected) ->
+            val result = transcribeResponse("{\"text\":$field}")
+            assertTrue("$field: $result", result is TranscriptionClient.Result.Success)
+            assertEquals(expected, (result as TranscriptionClient.Result.Success).text)
+        }
+    }
+
+    @Test
+    fun transcriptionStillRejectsMissingMalformedAndWrongTypeText() {
+        listOf("{}", "invalid JSON", "{\"text\":{}}", "{\"text\":[]}", "{\"text\":42}").forEach { body ->
+            val result = transcribeResponse(body)
+            assertTrue("$body: $result", result is TranscriptionClient.Result.Failure)
+            assertEquals(TranscriptionClient.FailureKind.INVALID_RESPONSE, (result as TranscriptionClient.Result.Failure).kind)
+            assertTrue(result.placeholderEligible)
+        }
+    }
+
+    private fun transcribeResponse(body: String): TranscriptionClient.Result {
+        val context: android.content.Context = RuntimeEnvironment.getApplication()
+        val audio = File.createTempFile("network-empty-test-", ".wav", context.cacheDir).apply {
+            writeBytes(byteArrayOf(1, 2, 3, 4))
+        }
+        return try {
+            TestServer().use { server ->
+                val captured = server.respond(200, body)
+                val result = TranscriptionClient(Diagnostics(context)).transcribe(
+                    1,
+                    TranscriptionClient.Request(
+                        endpoint = "${server.url}/v1/audio/transcriptions",
+                        apiKey = "key",
+                        model = "default",
+                        additionalFields = linkedMapOf(),
+                        audioFile = audio,
+                        mimeType = "audio/wav",
+                    ),
+                )
+                captured.get(3, TimeUnit.SECONDS)
+                result
+            }
+        } finally {
+            audio.delete()
+        }
+    }
+
+    @Test
     fun sendsMergedRequestAndReceivesText() {
         TestServer().use { server ->
             val captured = server.respond(200, """{"choices":[{"message":{"content":"result"}}]}""")

@@ -1,10 +1,18 @@
 package com.joeykot.dictate.job
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Looper
 import com.joeykot.dictate.DictateApplication
 import com.joeykot.dictate.advanced_audio.http.AdvancedCancellationSource
 import com.joeykot.dictate.advanced_audio.realtime.RealtimeSessionException
 import com.joeykot.dictate.audio.AudioEncodingPlan
+import com.joeykot.dictate.audio.PreparedSegmentedUpload
+import com.joeykot.dictate.audio.SegmentPlan
+import com.joeykot.dictate.audio.SegmentedUploadParameters
+import com.joeykot.dictate.audio.SegmentedUploadSnapshot
+import com.joeykot.dictate.audio.SourceInterval
 import com.joeykot.dictate.model.AdvancedAudioConfig
 import com.joeykot.dictate.model.AppSettings
 import com.joeykot.dictate.model.AudioConfig
@@ -14,6 +22,8 @@ import com.joeykot.dictate.model.JobState
 import com.joeykot.dictate.model.Pcm16Format
 import com.joeykot.dictate.model.RetryConfig
 import com.joeykot.dictate.model.RuntimeSettings
+import com.joeykot.dictate.network.TranscriptionClient
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -138,6 +148,50 @@ class AdvancedAudioJobTest {
     }
 
     @Test
+    fun advancedConnectionTestAcceptsEmptyTextWithoutRetryOrDelivery() {
+        onRequest = { socket -> socket.reply(200, "{\"text\":\"\"}") }
+        val clipboard = preserveClipboard()
+        val results = mutableListOf<VoiceJobController.ConnectionTestResult>()
+        val prepared = startPausedConnectionTest(requestWorkflow(), retryEnabled = true) { results += it }
+        prepared.releaseWorker()
+        await { results.isNotEmpty() }
+
+        assertTrue(results.single().success)
+        assertEquals(200, results.single().statusCode)
+        assertEquals("", results.single().text)
+        assertEquals("No speech detected", results.single().message)
+        assertEquals(1, requestCount.get())
+        assertEquals("existing clipboard", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+    }
+
+    @Test
+    fun segmentedBlankResultsFinishNormallyWithoutDeliveryForBothClients() {
+        for (advanced in listOf(false, true)) {
+            val clipboard = preserveClipboard()
+            val result = runSegmentedVoiceResponses(advanced, listOf(200 to "", 200 to " \n\t"))
+            assertEquals("", resultText(result))
+            handleSegmentedResult(result)
+            assertEquals(JobState.IDLE, controller.currentState().state)
+            assertEquals("No speech detected", controller.currentState().message)
+            assertEquals("existing clipboard", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+        }
+        assertEquals(4, requestCount.get())
+    }
+
+    @Test
+    fun segmentedBlankResultsPreserveSiblingTextAndRealFailurePositionsForBothClients() {
+        for (advanced in listOf(false, true)) {
+            val result = runSegmentedVoiceResponses(
+                advanced,
+                listOf(200 to " first ", 200 to " \n\t", 503 to "", 200 to "second "),
+            )
+            assertEquals(" first [503 Service Unavailable]second ", resultText(result))
+            controller.handleDoubleTap(controller.currentState().state)
+        }
+        assertEquals(8, requestCount.get())
+    }
+
+    @Test
     fun advancedConnectionTestRejectsMalformedWorkflowBeforePreparingAudio() {
         val results = mutableListOf<VoiceJobController.ConnectionTestResult>()
         val runtime = RuntimeSettings(
@@ -242,6 +296,33 @@ class AdvancedAudioJobTest {
     }
 
     @Test
+    fun realtimeReplayEmptyCompletionIsSuccessfulWithoutRetryOrDelivery() {
+        RetryingRealtimeServer(failFirstAttempt = false, transcript = "").use { realtimeServer ->
+            val clipboard = preserveClipboard()
+            val results = mutableListOf<VoiceJobController.ConnectionTestResult>()
+            val runtime = RuntimeSettings(
+                app = AppSettings(
+                    retry = RetryConfig(enabled = true, maxRetries = 1, initialBackoffSeconds = 0.1),
+                    advancedAudio = AdvancedAudioConfig(
+                        enabled = true,
+                        workflowJson = realtimeRetryWorkflow(realtimeServer.port),
+                    ),
+                ),
+                apiKey = "",
+            )
+            assertTrue(controller.testConnection(runtime) { results += it })
+            await { results.isNotEmpty() }
+
+            assertTrue(results.single().success)
+            assertEquals("No speech detected", results.single().message)
+            assertEquals("", results.single().text)
+            assertEquals(1, realtimeServer.connectionCount.get())
+            assertEquals("existing clipboard", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+            assertTrue(realtimeServer.errors.isEmpty())
+        }
+    }
+
+    @Test
     fun cancellingRealtimeReplayBackoffPreventsTheScheduledSecondSession() {
         RetryingRealtimeServer().use { realtimeServer ->
             val results = mutableListOf<VoiceJobController.ConnectionTestResult>()
@@ -301,6 +382,7 @@ class AdvancedAudioJobTest {
     private fun startPausedConnectionTest(
         workflow: String,
         retryEnabled: Boolean,
+        startRequest: Boolean = true,
         callback: (VoiceJobController.ConnectionTestResult) -> Unit,
     ): PausedConnectionTest {
         val releaseWorker = CountDownLatch(1)
@@ -335,9 +417,70 @@ class AdvancedAudioJobTest {
                 Pcm16Format.LEGACY_MONO_16_KHZ,
             ),
         )
-        invokeStartRequest(jobId(job))
+        if (startRequest) invokeStartRequest(jobId(job))
         return PausedConnectionTest(job, releaseWorker)
     }
+
+    /** Exercise the controller's real batch joining without requiring native FFmpeg in a JVM test. */
+    private fun runSegmentedVoiceResponses(advanced: Boolean, responses: List<Pair<Int, String>>): Any {
+        val responseIndex = AtomicInteger()
+        onRequest = { socket ->
+            val (status, text) = responses[responseIndex.getAndIncrement()]
+            socket.reply(status, if (status == 200) JSONObject().put("text", text).toString() else "{}")
+        }
+        val prepared = startPausedConnectionTest(requestWorkflow(), retryEnabled = false, startRequest = false) {}
+        val job = prepared.job
+        val modeField = job.javaClass.getDeclaredField("mode").apply { isAccessible = true }
+        modeField.set(job, requireNotNull(modeField.type.enumConstants).single { (it as Enum<*>).name == "VOICE" })
+        val original = checkNotNull(jobField<RuntimeSettings>(job, "runtimeSettings"))
+        val runtime = original.copy(
+            app = original.app.copy(
+                advancedAudio = original.app.advancedAudio.copy(enabled = advanced),
+                provider = original.app.provider.copy(baseUrl = "http://127.0.0.1:${server.localPort}", model = "test"),
+            ),
+            apiKey = "test-key",
+        )
+        setJobField(job, "runtimeSettings", runtime)
+        val directory = java.nio.file.Files.createTempDirectory("job-empty-segments-").toFile()
+        val upload = PreparedSegmentedUpload(
+            directory = directory,
+            snapshot = SegmentedUploadSnapshot(
+                SegmentedUploadParameters(1, 100, 1),
+                SegmentPlan(16_000, responses.size.toLong(), 16_000, responses.indices.map {
+                    SourceInterval(it.toLong(), it.toLong() + 1)
+                }),
+            ),
+            files = responses.indices.map { File(directory, "$it.wav").apply { writeBytes(byteArrayOf(1, 2)) } },
+            operationIds = responses.indices.map(Int::toLong),
+        )
+        val client = VoiceJobController::class.java.getDeclaredField("client")
+            .apply { isAccessible = true }.get(controller) as TranscriptionClient
+        val registration = if (advanced) null else client.registerJob(jobId(job))
+        return try {
+            VoiceJobController::class.java.declaredMethods.single { it.name == "runSegmentedRequests" }
+                .apply { isAccessible = true }
+                .invoke(controller, job, runtime, jobField<AudioEncodingPlan>(job, "encodingPlan"), upload, registration)
+        } finally {
+            registration?.close()
+            upload.cleanup()
+            prepared.releaseWorker()
+        }
+    }
+
+    private fun resultText(result: Any): String {
+        val response = result.javaClass.getDeclaredMethod("getResult").apply { isAccessible = true }.invoke(result)
+        return response.javaClass.getMethod("getText").invoke(response) as String
+    }
+
+    private fun handleSegmentedResult(result: Any) {
+        VoiceJobController::class.java.declaredMethods.single { it.name == "handleSegmentedRequestResult" }
+            .apply { isAccessible = true }.invoke(controller, jobId(checkNotNull(activeJob())), result)
+    }
+
+    private fun preserveClipboard(): ClipboardManager =
+        (application.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).apply {
+            setPrimaryClip(ClipData.newPlainText("existing", "existing clipboard"))
+        }
 
     private fun requestWorkflow(): String = """
         {
@@ -498,7 +641,10 @@ class AdvancedAudioJobTest {
         }
     }
 
-    private class RetryingRealtimeServer : AutoCloseable {
+    private class RetryingRealtimeServer(
+        private val failFirstAttempt: Boolean = true,
+        private val transcript: String = "retried transcript",
+    ) : AutoCloseable {
         private val server = ServerSocket(0, 2, InetAddress.getByName("127.0.0.1"))
         val port: Int = server.localPort
         val connectionCount = AtomicInteger()
@@ -531,7 +677,7 @@ class AdvancedAudioJobTest {
 
         private fun handle(socket: Socket, attempt: Int) {
             val headers = readHeaders(socket)
-            if (attempt == 1) return
+            if (failFirstAttempt && attempt == 1) return
 
             val key = headers.lineSequence()
                 .firstOrNull { it.startsWith("Sec-WebSocket-Key:", ignoreCase = true) }
@@ -551,7 +697,7 @@ class AdvancedAudioJobTest {
                             "Sec-WebSocket-Accept: $accept\r\n\r\n"
                         ).toByteArray(Charsets.ISO_8859_1),
                 )
-                writeTextFrame("{\"event\":\"completed\",\"text\":\"retried transcript\"}")
+                writeTextFrame(JSONObject().put("event", "completed").put("text", transcript).toString())
                 flush()
             }
             // The client receives the queued completion while it sends the

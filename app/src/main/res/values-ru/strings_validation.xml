@@ -40,8 +40,7 @@
     <string name="val_audio_missing">Аудиофайл для загрузки отсутствует или пуст</string>
     <string name="val_response_object">Ответ не является допустимым объектом JSON</string>
     <string name="val_response_text_missing">В ответе отсутствует поле text верхнего уровня</string>
-    <string name="val_response_text_type">Поле text верхнего уровня должно быть строкой</string>
-    <string name="val_response_text_empty">Поле text верхнего уровня не может быть пустым</string>
+    <string name="val_response_text_type">Поле text верхнего уровня должно быть строкой или null</string>
     <string name="val_transcription_connect_timeout">Истекло время подключения к сервису транскрипции</string>
     <string name="val_transcription_read_timeout">Истекло время ожидания ответа транскрипции</string>
     <string name="val_request_timeout">Истекло время запроса</string>

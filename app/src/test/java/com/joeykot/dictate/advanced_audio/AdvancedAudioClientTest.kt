@@ -35,6 +35,251 @@ class AdvancedAudioClientTest {
     }
 
     @Test
+    fun requestAndAsyncResultsAcceptEmptyWhitespaceAndNullTextWithoutRetrying() = withAudio { audio ->
+        listOf("\"\"" to "", "\" \\t\\n\"" to " \t\n", "null" to "").forEach { (field, expected) ->
+            val body = """{"text":$field}"""
+            val cases = listOf(
+                requestRecognition() to listOf(response(200, body)),
+                asyncRecognition() to listOf(response(202, body)),
+                asyncRecognition(withPoll = true) to listOf(
+                    response(202, """{"task":"one"}"""),
+                    response(200, """{"status":"succeeded","text":$field}"""),
+                ),
+                asyncRecognition(withResultStep = true) to listOf(
+                    response(202, """{"task":"one"}"""), response(200, body),
+                ),
+            )
+            cases.forEach { (recognition, responses) ->
+                val transport = FakeTransport(*responses.map(ScriptedOutcome::Response).toTypedArray())
+                val result = run(workflowConfig(recognition), transport, audio, retrying())
+                assertTrue("$recognition $body: $result", result is AdvancedAudioClient.Result.Success)
+                assertEquals(expected, (result as AdvancedAudioClient.Result.Success).text)
+                assertEquals(responses.size, transport.requests.size)
+            }
+        }
+    }
+
+    @Test
+    fun noWordsResponseCompletesEachAsrHttpStageWithoutRetryingOrRunningLaterStages() = withAudio { audio ->
+        val noWords = response(400, """{"error":{"code":"ASR_RESPONSE_HAVE_NO_WORDS"}}""")
+        val submitted = response(202, """{"task":"one"}""")
+        val cases = listOf(
+            requestRecognition() to listOf(noWords),
+            streamRecognition() to listOf(noWords),
+            streamRecognition().let { it.copy(request = it.request.copy(acceptedStatuses = listOf(400))) } to listOf(noWords),
+            asyncRecognition(withPoll = true, withResultStep = true) to listOf(noWords),
+            asyncRecognition(withPoll = true, withResultStep = true) to listOf(submitted, noWords),
+            asyncRecognition(withResultStep = true) to listOf(submitted, noWords),
+        )
+        cases.forEach { (recognition, responses) ->
+            val transport = FakeTransport(*responses.map(ScriptedOutcome::Response).toTypedArray())
+            val result = run(workflowConfig(recognition), transport, audio, retrying())
+            assertTrue("$recognition: $result", result is AdvancedAudioClient.Result.Success)
+            assertEquals("", (result as AdvancedAudioClient.Result.Success).text)
+            assertEquals(400, result.statusCode)
+            assertEquals(responses.size, transport.requests.size)
+        }
+    }
+
+    @Test
+    fun pollNoWordsRequiresATerminalFailureAndDoesNotMaskPendingOrOtherFailures() = withAudio { audio ->
+        val submitted = ScriptedOutcome.Response(response(202, """{"task":"one"}"""))
+        val pollWorkflow = asyncRecognition(withPoll = true).let { recognition ->
+            recognition.copy(poll = requireNotNull(recognition.poll).copy(timeoutMs = 1_000))
+        }
+        val noSpeechTransport = FakeTransport(
+            submitted,
+            ScriptedOutcome.Response(response(200, """{"status":"pending","code":"ASR_RESPONSE_HAVE_NO_WORDS"}""")),
+            ScriptedOutcome.Response(response(200, """{"status":"failed","code":"ASR_RESPONSE_HAVE_NO_WORDS"}""")),
+        )
+        val noSpeech = run(workflowConfig(pollWorkflow), noSpeechTransport, audio, retrying())
+        assertTrue(noSpeech is AdvancedAudioClient.Result.Success)
+        assertEquals("", (noSpeech as AdvancedAudioClient.Result.Success).text)
+        assertEquals(200, noSpeech.statusCode)
+        assertEquals(3, noSpeechTransport.requests.size)
+
+        val failedTransport = FakeTransport(
+            submitted,
+            ScriptedOutcome.Response(response(200, """{"status":"failed","text":"","code":"INVALID_AUDIO"}""")),
+        )
+        val failed = run(workflowConfig(pollWorkflow), failedTransport, audio, retrying())
+        assertTrue(failed is AdvancedAudioClient.Result.Failure)
+        assertTrue((failed as AdvancedAudioClient.Result.Failure).placeholderEligible)
+        assertEquals(2, failedTransport.requests.size)
+    }
+
+    @Test
+    fun noWordsDoesNotHidePrepareAuthenticationOrMalformedResponseFailures() = withAudio { audio ->
+        val prepare = HttpStage(
+            method = HttpMethod.GET,
+            url = "https://workflow.test/prepare",
+            captures = listOf(Capture("token", ResponseExtractor.JsonPath("$.token"))),
+        )
+        val cases = listOf(
+            asyncRecognition().copy(prepare = prepare) to response(400, """{"message":"ASR_RESPONSE_HAVE_NO_WORDS"}"""),
+            asyncRecognition().copy(prepare = prepare) to response(200, """{"token":null}"""),
+            requestRecognition() to response(401, """{"message":"ASR_RESPONSE_HAVE_NO_WORDS"}"""),
+            requestRecognition() to response(400, """{"message":"invalid audio"}"""),
+            requestRecognition() to response(200, "{}"),
+            requestRecognition() to response(200, """{"text":[]}"""),
+            requestRecognition() to response(200, """{"text":{}}"""),
+            requestRecognition() to response(200, "malformed JSON"),
+        )
+        cases.forEach { (recognition, response) ->
+            val transport = FakeTransport(ScriptedOutcome.Response(response))
+            val result = run(workflowConfig(recognition), transport, audio, retrying())
+            assertTrue("$recognition: $result", result is AdvancedAudioClient.Result.Failure)
+            assertTrue((result as AdvancedAudioClient.Result.Failure).placeholderEligible)
+            assertEquals(1, transport.requests.size)
+        }
+    }
+
+    @Test
+    fun emptyStreamIsSuccessfulOnlyWithExplicitCompletion() = withAudio { audio ->
+        val cases = listOf(
+            "event: done\ndata: {}\n\n" to "",
+            "data: {\"delta\":\"\"}\n\nevent: done\ndata: {}\n\n" to "",
+            "data: {\"delta\":null}\n\nevent: done\ndata: {}\n\n" to "",
+            "data: {\"delta\":\" \\t\"}\n\nevent: done\ndata: {}\n\n" to " \t",
+        )
+        cases.forEach { (body, expected) ->
+            val transport = FakeTransport(ScriptedOutcome.Response(response(200, body)))
+            val result = run(workflowConfig(streamRecognition()), transport, audio, retrying())
+            assertTrue("$body: $result", result is AdvancedAudioClient.Result.Success)
+            assertEquals(expected, (result as AdvancedAudioClient.Result.Success).text)
+            assertEquals(1, transport.requests.size)
+        }
+        listOf("", "data: {\"delta\":null}\n\n", "data: {\"delta\":{}}\n\nevent: done\ndata: {}\n\n").forEach { body ->
+            val transport = FakeTransport(ScriptedOutcome.Response(response(200, body)))
+            val result = run(workflowConfig(streamRecognition()), transport, audio)
+            assertTrue("$body: $result", result is AdvancedAudioClient.Result.Failure)
+        }
+    }
+
+    @Test
+    fun streamEmptyFinalOrNoWordsFailureDiscardsEarlierPartialText() = withAudio { audio ->
+        val base = streamRecognition()
+        val recognition = base.copy(
+            stream = base.stream.copy(rules = listOf(
+                StreamRule(event = "partial", path = "$.text", action = StreamAction.REPLACE_PARTIAL),
+                StreamRule(event = "final", path = "$.text", action = StreamAction.SET_FINAL_TEXT),
+                StreamRule(event = "error", path = "$.message", action = StreamAction.FAIL),
+                StreamRule(event = "error", action = StreamAction.COMPLETE),
+                StreamRule(event = "done", action = StreamAction.COMPLETE),
+            )),
+        )
+        listOf(
+            "event: final\ndata: {\"text\":null}\n\nevent: done\ndata: {}\n\n",
+            "event: partial\ndata: {\"text\":null}\n\nevent: done\ndata: {}\n\n",
+            "event: error\ndata: {\"message\":\"ASR_RESPONSE_HAVE_NO_WORDS\"}\n\n",
+            "event: error\ndata: {\"code\":\"ASR_RESPONSE_HAVE_NO_WORDS\",\"message\":\"no speech\"}\n\n",
+        ).forEach { ending ->
+            val body = "event: partial\ndata: {\"text\":\"discard this partial\"}\n\n$ending"
+            val transport = FakeTransport(ScriptedOutcome.Response(response(200, body)))
+            val result = run(workflowConfig(recognition), transport, audio, retrying())
+            assertTrue("$body: $result", result is AdvancedAudioClient.Result.Success)
+            assertEquals("", (result as AdvancedAudioClient.Result.Success).text)
+            assertEquals(1, transport.requests.size)
+        }
+    }
+
+    @Test
+    fun noWordsMarkerDoesNotBypassStreamRuleMatching() = withAudio { audio ->
+        val base = streamRecognition()
+        val recognition = base.copy(
+            stream = base.stream.copy(rules = listOf(
+                StreamRule(event = "error", path = "$.message", action = StreamAction.FAIL, equals = "fatal"),
+                StreamRule(event = "delta", path = "$.text", action = StreamAction.APPEND_DELTA),
+                StreamRule(event = "done", action = StreamAction.COMPLETE),
+            )),
+        )
+        val body = "event: error\ndata: {\"code\":\"ASR_RESPONSE_HAVE_NO_WORDS\",\"message\":\"no speech\"}\n\n" +
+            "event: delta\ndata: {\"text\":\"kept\"}\n\nevent: done\ndata: {}\n\n"
+        val transport = FakeTransport(ScriptedOutcome.Response(response(200, body)))
+        val result = run(workflowConfig(recognition), transport, audio, retrying())
+        assertTrue(result is AdvancedAudioClient.Result.Success)
+        assertEquals("kept", (result as AdvancedAudioClient.Result.Success).text)
+    }
+
+    @Test
+    fun noWordsStreamCompletionIgnoresSameChunkDoneAndTextFrames() = withAudio { audio ->
+        StreamFormat.entries.forEach { format ->
+            listOf(
+                listOf("""{"done":true}"""),
+                listOf("""{"delta":"ignored tail"}"""),
+                listOf("""{"done":true}""", """{"delta":"ignored tail"}"""),
+            ).forEach { tail ->
+                val frames = listOf(
+                    """{"delta":"discard this partial"}""",
+                    """{"error":"ASR_RESPONSE_HAVE_NO_WORDS"}""",
+                ) + tail
+                val transport = FakeTransport(
+                    ScriptedOutcome.Response(response(200, encodeStreamFrames(format, frames))),
+                )
+                val result = run(workflowConfig(streamRecognitionWithNoWordsRule(format)), transport, audio, retrying())
+
+                assertTrue("$format $tail: $result", result is AdvancedAudioClient.Result.Success)
+                assertEquals("", (result as AdvancedAudioClient.Result.Success).text)
+                assertEquals(1, transport.requests.size)
+                assertTrue(transport.responses.single().closed)
+            }
+        }
+    }
+
+    @Test
+    fun noWordsStreamCompletionClosesWithoutReadingAgainOrRetrying() = withAudio { audio ->
+        StreamFormat.entries.forEach { format ->
+            val bytes = encodeStreamFrames(format, listOf("""{"error":"ASR_RESPONSE_HAVE_NO_WORDS"}""")).toByteArray()
+            val input = object : ByteArrayInputStream(bytes) {
+                var reads = 0
+                var closed = false
+
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    reads += 1
+                    if (reads > 1) throw IOException("The server keeps the stream open after no-words completion")
+                    return super.read(buffer, offset, length)
+                }
+
+                override fun close() {
+                    closed = true
+                    super.close()
+                }
+            }
+            val transport = FakeTransport(
+                ScriptedOutcome.Response(FakeResponse(200, bytes, streamFactory = { input })),
+            )
+            val result = run(workflowConfig(streamRecognitionWithNoWordsRule(format)), transport, audio, retrying())
+
+            assertTrue("$format: $result", result is AdvancedAudioClient.Result.Success)
+            assertEquals("", (result as AdvancedAudioClient.Result.Success).text)
+            assertEquals(1, input.reads)
+            assertTrue(input.closed)
+            assertEquals(1, transport.requests.size)
+            assertTrue(transport.responses.single().closed)
+        }
+    }
+
+    @Test
+    fun ordinaryStreamCompletionStillRejectsLaterActions() = withAudio { audio ->
+        StreamFormat.entries.forEach { format ->
+            listOf(
+                """{"delta":"invalid tail"}""",
+                """{"done":true}""",
+                """{"error":"ASR_RESPONSE_HAVE_NO_WORDS"}""",
+            ).forEach { tail ->
+                val body = encodeStreamFrames(format, listOf("""{"done":true}""", tail))
+                val transport = FakeTransport(ScriptedOutcome.Response(response(200, body)))
+                val result = run(workflowConfig(streamRecognitionWithNoWordsRule(format)), transport, audio, retrying())
+
+                assertTrue("$format $tail: $result", result is AdvancedAudioClient.Result.Failure)
+                assertTrue((result as AdvancedAudioClient.Result.Failure).placeholderEligible)
+                assertEquals(1, transport.requests.size)
+                assertTrue(transport.responses.single().closed)
+            }
+        }
+    }
+
+    @Test
     fun asyncSubmitDoesNotRetryNetworkOrServerFailures() = withAudio { audio ->
         listOf<ScriptedOutcome>(
             ScriptedOutcome.Failure(HttpTransportException.NetworkFailure(IOException("offline"))),
@@ -418,6 +663,27 @@ class AdvancedAudioClientTest {
         ),
     )
 
+    private fun streamRecognitionWithNoWordsRule(format: StreamFormat): RequestStreamRecognition =
+        streamRecognition().copy(
+            stream = StreamResponse(
+                format = format,
+                rules = listOf(
+                    StreamRule(path = "$.delta", action = StreamAction.APPEND_DELTA),
+                    StreamRule(path = "$.error", action = StreamAction.FAIL),
+                    StreamRule(path = "$.done", action = StreamAction.COMPLETE, equals = "true"),
+                ),
+            ),
+        )
+
+    private fun encodeStreamFrames(format: StreamFormat, frames: List<String>): String =
+        frames.joinToString("") { frame ->
+            when (format) {
+                StreamFormat.SSE -> "data: $frame\n\n"
+                StreamFormat.NDJSON -> "$frame\n"
+                StreamFormat.JSON_CHUNKS -> frame
+            }
+        }
+
     private fun audioSubmitStage(url: String, acceptedStatuses: List<Int>): HttpStage = HttpStage(
         method = HttpMethod.POST,
         url = url,
@@ -484,6 +750,7 @@ class AdvancedAudioClientTest {
         private val planned = planned.toMutableList()
         val requests = mutableListOf<HttpRequestSpec>()
         val callTimeouts = mutableListOf<Long?>()
+        val responses = mutableListOf<FakeResponse>()
 
         override fun execute(
             request: HttpRequestSpec,
@@ -500,7 +767,7 @@ class AdvancedAudioClientTest {
                     outcome.response.copy()
                 }
                 is ScriptedOutcome.Failure -> throw outcome.error
-            }
+            }.also(responses::add)
         }
     }
 
@@ -508,16 +775,22 @@ class AdvancedAudioClientTest {
         override val statusCode: Int,
         private val bytes: ByteArray,
         override val headers: List<HttpHeader> = emptyList(),
+        private val streamFactory: (() -> InputStream)? = null,
     ) : HttpResponse {
+        var closed = false
+            private set
+
         override fun readBody(maxBytes: Int): ByteArray {
             check(bytes.size <= maxBytes)
             return bytes.copyOf()
         }
 
-        override fun openBodyStream(): InputStream = ByteArrayInputStream(bytes.copyOf())
+        override fun openBodyStream(): InputStream = streamFactory?.invoke() ?: ByteArrayInputStream(bytes.copyOf())
 
-        override fun close() = Unit
+        override fun close() {
+            closed = true
+        }
 
-        fun copy(): FakeResponse = FakeResponse(statusCode, bytes.copyOf(), headers.toList())
+        fun copy(): FakeResponse = FakeResponse(statusCode, bytes.copyOf(), headers.toList(), streamFactory)
     }
 }

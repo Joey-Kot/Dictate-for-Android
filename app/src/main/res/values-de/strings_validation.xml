@@ -40,8 +40,7 @@
     <string name="val_audio_missing">Die hochzuladende Audiodatei fehlt oder ist leer</string>
     <string name="val_response_object">Die Antwort ist kein gültiges JSON-Objekt</string>
     <string name="val_response_text_missing">In der Antwort fehlt das text-Feld auf oberster Ebene</string>
-    <string name="val_response_text_type">Das text-Feld auf oberster Ebene muss eine Zeichenfolge sein</string>
-    <string name="val_response_text_empty">Das text-Feld auf oberster Ebene darf nicht leer sein</string>
+    <string name="val_response_text_type">Das text-Feld auf oberster Ebene muss eine Zeichenfolge oder null sein</string>
     <string name="val_transcription_connect_timeout">Zeitüberschreitung beim Verbinden mit dem Transkriptionsdienst</string>
     <string name="val_transcription_read_timeout">Zeitüberschreitung beim Warten auf die Transkriptionsantwort</string>
     <string name="val_request_timeout">Zeitüberschreitung der Anfrage</string>

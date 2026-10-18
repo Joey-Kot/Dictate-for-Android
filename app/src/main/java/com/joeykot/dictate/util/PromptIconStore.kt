@@ -4,11 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.ColorFilter
-import android.graphics.Paint
-import android.graphics.Path
-import android.graphics.PixelFormat
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.net.Uri
@@ -21,27 +16,45 @@ import java.util.UUID
 
 /** Shared by the prompt editor and the floating action menu. */
 object PromptIconStore {
-    data class Builtin(val id: String, val labelRes: Int, val fallbackLabel: String, val color: Int) {
+    data class Builtin(val id: String, val labelRes: Int, val fallbackLabel: String, val drawableRes: Int) {
         val label: String get() = AppStrings.get(labelRes, fallbackLabel)
     }
     data class ImportedIcon(val name: String, val drawable: Drawable)
 
     val builtins = listOf(
-        Builtin("document", R.string.prompt_icon_document, "Document", 0xFF477DAD.toInt()),
-        Builtin("sparkles", R.string.prompt_icon_sparkles, "Polish", 0xFF627B51.toInt()),
-        Builtin("translate", R.string.prompt_icon_translate, "Translate", 0xFF82709B.toInt()),
-        Builtin("checklist", R.string.prompt_icon_checklist, "To-do", 0xFF947153.toInt()),
-        Builtin("chat", R.string.prompt_icon_chat, "Reply", 0xFF4D86A3.toInt()),
-        Builtin("edit", R.string.prompt_icon_edit, "Write", 0xFF876795.toInt()),
-        Builtin("tag", R.string.prompt_icon_tag, "Title", 0xFF487E99.toInt()),
-        Builtin("book", R.string.prompt_icon_book, "Explain", 0xFF518967.toInt()),
+        Builtin("chat", R.string.prompt_icon_chat, "Chat", R.drawable.prompt_icon_chat),
+        Builtin("messages", R.string.prompt_icon_messages, "Messages", R.drawable.prompt_icon_messages),
+        Builtin("translate", R.string.prompt_icon_translate, "Translate", R.drawable.prompt_icon_translate),
+        Builtin("eye", R.string.prompt_icon_eye, "Eye", R.drawable.prompt_icon_eye),
+        Builtin("feather", R.string.prompt_icon_feather, "Feather", R.drawable.prompt_icon_feather),
+        Builtin("document", R.string.prompt_icon_document, "Document", R.drawable.prompt_icon_document),
+        Builtin("shield", R.string.prompt_icon_shield, "Shield", R.drawable.prompt_icon_shield),
+        Builtin("pie_chart", R.string.prompt_icon_pie_chart, "Pie chart", R.drawable.prompt_icon_pie_chart),
+        Builtin("tags", R.string.prompt_icon_tags, "Tags", R.drawable.prompt_icon_tags),
+        Builtin("text_card", R.string.prompt_icon_text_card, "Text card", R.drawable.prompt_icon_text_card),
+        Builtin("box", R.string.prompt_icon_box, "Box", R.drawable.prompt_icon_box),
+        Builtin("flask", R.string.prompt_icon_flask, "Flask", R.drawable.prompt_icon_flask),
+        Builtin("globe", R.string.prompt_icon_globe, "Globe", R.drawable.prompt_icon_globe),
+        Builtin("cookie", R.string.prompt_icon_cookie, "Cookie", R.drawable.prompt_icon_cookie),
+        Builtin("window", R.string.prompt_icon_window, "Window", R.drawable.prompt_icon_window),
+        Builtin("plug", R.string.prompt_icon_plug, "Plug", R.drawable.prompt_icon_plug),
+        Builtin("settings", R.string.prompt_icon_settings, "Settings", R.drawable.prompt_icon_settings),
+        Builtin("layers", R.string.prompt_icon_layers, "Layers", R.drawable.prompt_icon_layers),
+        Builtin("key", R.string.prompt_icon_key, "Key", R.drawable.prompt_icon_key),
+        Builtin("network", R.string.prompt_icon_network, "Network", R.drawable.prompt_icon_network),
+        Builtin("hierarchy", R.string.prompt_icon_hierarchy, "Hierarchy", R.drawable.prompt_icon_hierarchy),
+        Builtin("bar_chart", R.string.prompt_icon_bar_chart, "Bar chart", R.drawable.prompt_icon_bar_chart),
+        Builtin("microphone", R.string.prompt_icon_microphone, "Microphone", R.drawable.prompt_icon_microphone),
+        Builtin("fingerprint", R.string.prompt_icon_fingerprint, "Fingerprint", R.drawable.prompt_icon_fingerprint),
+        Builtin("layout", R.string.prompt_icon_layout, "Layout", R.drawable.prompt_icon_layout),
     )
 
     fun load(context: Context, prompt: PromptConfig): Drawable {
         prompt.customIcon?.let { name ->
             runCatching { decode(context, file(context, name)) }.getOrNull()?.let { return it }
         }
-        return BuiltinDrawable(builtins.firstOrNull { it.id == prompt.icon } ?: builtins.first())
+        val builtin = builtins.firstOrNull { it.id == prompt.icon } ?: builtins.first()
+        return requireNotNull(context.getDrawable(builtin.drawableRes)).mutate()
     }
 
     /** Imports only after validation, leaving the currently saved icon untouched. */
@@ -119,99 +132,6 @@ object PromptIconStore {
             output.write(buffer, 0, count)
         }
         return output.toByteArray()
-    }
-
-    private class BuiltinDrawable(private val icon: Builtin) : Drawable() {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-
-        override fun draw(canvas: Canvas) {
-            val save = canvas.save()
-            canvas.translate(bounds.left.toFloat(), bounds.top.toFloat())
-            canvas.scale(bounds.width() / 48f, bounds.height() / 48f)
-            paint.style = Paint.Style.FILL
-            paint.color = icon.color
-            canvas.drawCircle(24f, 24f, 23f, paint)
-            paint.color = Color.WHITE
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 2f
-            paint.strokeCap = Paint.Cap.ROUND
-            paint.strokeJoin = Paint.Join.ROUND
-            when (icon.id) {
-                "document" -> {
-                    canvas.drawRoundRect(16f, 13f, 32f, 35f, 1.5f, 1.5f, paint)
-                    line(canvas, 20f, 19f, 28f, 19f)
-                    line(canvas, 20f, 24f, 28f, 24f)
-                    line(canvas, 20f, 29f, 25f, 29f)
-                }
-                "sparkles" -> {
-                    star(canvas, 22f, 23f, 10f)
-                    star(canvas, 33f, 15f, 4f)
-                    star(canvas, 33f, 33f, 4f)
-                }
-                "translate" -> {
-                    paint.style = Paint.Style.FILL
-                    paint.textSize = 19f
-                    canvas.drawText("文", 11f, 26f, paint)
-                    paint.textSize = 16f
-                    canvas.drawText("A", 26f, 35f, paint)
-                }
-                "checklist" -> {
-                    canvas.drawRoundRect(14f, 14f, 34f, 34f, 2f, 2f, paint)
-                    path(canvas, 19f to 24f, 23f to 28f, 30f to 20f)
-                }
-                "chat" -> {
-                    path(canvas, 15f to 16f, 33f to 16f, 35f to 19f, 35f to 28f,
-                        32f to 31f, 23f to 31f, 16f to 36f, 18f to 30f, 13f to 27f,
-                        13f to 19f, 15f to 16f)
-                    line(canvas, 19f, 23f, 29f, 23f)
-                }
-                "edit" -> {
-                    path(canvas, 31f to 14f, 35f to 18f, 23f to 30f, 18f to 31f,
-                        19f to 26f, 31f to 14f)
-                    path(canvas, 15f to 20f, 13f to 20f, 13f to 35f, 29f to 35f, 29f to 32f)
-                }
-                "tag" -> {
-                    path(canvas, 13f to 14f, 25f to 14f, 36f to 25f, 25f to 36f,
-                        13f to 24f, 13f to 14f)
-                    canvas.drawCircle(19f, 20f, 1.5f, paint)
-                }
-                "book" -> {
-                    path(canvas, 24f to 16f, 19f to 13f, 12f to 13f, 12f to 32f,
-                        19f to 32f, 24f to 35f, 29f to 32f, 36f to 32f, 36f to 13f,
-                        29f to 13f, 24f to 16f, 24f to 35f)
-                }
-            }
-            canvas.restoreToCount(save)
-        }
-
-        private fun line(canvas: Canvas, x1: Float, y1: Float, x2: Float, y2: Float) =
-            canvas.drawLine(x1, y1, x2, y2, paint)
-
-        private fun path(canvas: Canvas, vararg points: Pair<Float, Float>) {
-            canvas.drawPath(Path().apply {
-                moveTo(points.first().first, points.first().second)
-                points.drop(1).forEach { lineTo(it.first, it.second) }
-            }, paint)
-        }
-
-        private fun star(canvas: Canvas, x: Float, y: Float, size: Float) {
-            paint.style = Paint.Style.FILL
-            canvas.drawPath(Path().apply {
-                moveTo(x, y - size)
-                quadTo(x + size * .25f, y - size * .25f, x + size, y)
-                quadTo(x + size * .25f, y + size * .25f, x, y + size)
-                quadTo(x - size * .25f, y + size * .25f, x - size, y)
-                quadTo(x - size * .25f, y - size * .25f, x, y - size)
-            }, paint)
-            paint.style = Paint.Style.STROKE
-        }
-
-        override fun setAlpha(alpha: Int) { paint.alpha = alpha; invalidateSelf() }
-        override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter; invalidateSelf() }
-        @Deprecated("Deprecated in Android")
-        override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
-        override fun getIntrinsicWidth(): Int = 48
-        override fun getIntrinsicHeight(): Int = 48
     }
 
     private val SAFE_FILENAME = Regex("[A-Za-z0-9_-]{1,128}\\.(?:png|jpg|jpeg|svg)")

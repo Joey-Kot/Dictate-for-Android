@@ -40,8 +40,7 @@
     <string name="val_audio_missing">アップロードする音声ファイルが存在しないか空です</string>
     <string name="val_response_object">応答が有効な JSON オブジェクトではありません</string>
     <string name="val_response_text_missing">応答にトップレベルの text フィールドがありません</string>
-    <string name="val_response_text_type">トップレベルの text フィールドは文字列である必要があります</string>
-    <string name="val_response_text_empty">トップレベルの text フィールドを空にすることはできません</string>
+    <string name="val_response_text_type">トップレベルの text フィールドは文字列または null である必要があります</string>
     <string name="val_transcription_connect_timeout">文字起こしサービスへの接続がタイムアウトしました</string>
     <string name="val_transcription_read_timeout">文字起こしの応答待ちがタイムアウトしました</string>
     <string name="val_request_timeout">リクエストがタイムアウトしました</string>

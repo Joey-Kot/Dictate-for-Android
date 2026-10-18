@@ -40,8 +40,7 @@
     <string name="val_audio_missing">The audio file to upload is missing or empty</string>
     <string name="val_response_object">The response is not a valid JSON object</string>
     <string name="val_response_text_missing">The response is missing the top-level text field</string>
-    <string name="val_response_text_type">The top-level text field must be a string</string>
-    <string name="val_response_text_empty">The top-level text field cannot be empty</string>
+    <string name="val_response_text_type">The top-level text field must be a string or null</string>
     <string name="val_transcription_connect_timeout">Timed out connecting to the transcription service</string>
     <string name="val_transcription_read_timeout">Timed out waiting for the transcription response</string>
     <string name="val_request_timeout">Request timed out</string>

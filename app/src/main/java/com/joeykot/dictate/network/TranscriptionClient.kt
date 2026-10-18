@@ -331,7 +331,7 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
             if (isCancelled()) return Result.Cancelled
 
             if (status !in 200..299) {
-                if (isNoWordsResponse(status, responseBody)) {
+                if (isNoWordsAsrResponse(status, responseBody)) {
                     diagnostics.info(
                         "http",
                         "job=${operation.parentJobId} request=${operation.requestId} status=$status elapsed=${elapsed}ms outcome=no-speech",
@@ -535,31 +535,10 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
         }
         if (!root.has("text")) throw InvalidResponseException(AppStrings.get(R.string.val_response_text_missing, "The response is missing the top-level text field"))
         val value = root.get("text")
-        if (value !is String) throw InvalidResponseException(AppStrings.get(R.string.val_response_text_type, "The top-level text field must be a string"))
-        if (value.isBlank()) throw InvalidResponseException(AppStrings.get(R.string.val_response_text_empty, "The top-level text field cannot be empty"))
+        if (value === JSONObject.NULL) return ""
+        if (value !is String) throw InvalidResponseException(AppStrings.get(R.string.val_response_text_type, "The top-level text field must be a string or null"))
         return value
     }
-
-    /**
-     * Some ASR services use this exact HTTP 400 response to report a completed
-     * recognition with no valid words. It is an empty transcription, not a
-     * transport or provider failure. Keep the match deliberately narrow so
-     * other HTTP 400 responses still surface normally.
-     */
-    private fun isNoWordsResponse(status: Int, body: String): Boolean {
-        if (status != HttpURLConnection.HTTP_BAD_REQUEST) return false
-        val root = runCatching { JSONObject(body) }.getOrNull() ?: return false
-        if (hasNoWordsCode(root)) return true
-        return when (val error = root.opt("error")) {
-            is String -> error == ASR_RESPONSE_HAVE_NO_WORDS
-            is JSONObject -> hasNoWordsCode(error)
-            else -> false
-        }
-    }
-
-    private fun hasNoWordsCode(value: JSONObject): Boolean =
-        listOf("code", "message", "info", "detail")
-            .any { field -> value.opt(field) == ASR_RESPONSE_HAVE_NO_WORDS }
 
     private fun failure(
         kind: FailureKind,
@@ -657,7 +636,6 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
         const val FILE_BUFFER_SIZE = 16 * 1024
         const val MAX_RESPONSE_BYTES = 2 * 1024 * 1024
         const val MAX_SERVER_SUMMARY = 2_000
-        const val ASR_RESPONSE_HAVE_NO_WORDS = "ASR_RESPONSE_HAVE_NO_WORDS"
     }
 }
 

@@ -40,8 +40,7 @@
     <string name="val_audio_missing">待上传音频不存在或为空</string>
     <string name="val_response_object">响应不是有效的 JSON 对象</string>
     <string name="val_response_text_missing">响应缺少顶层 text 字段</string>
-    <string name="val_response_text_type">响应顶层 text 必须是字符串</string>
-    <string name="val_response_text_empty">响应顶层 text 不能为空</string>
+    <string name="val_response_text_type">响应顶层 text 必须是字符串或 null</string>
     <string name="val_transcription_connect_timeout">连接转写服务超时</string>
     <string name="val_transcription_read_timeout">等待转写响应超时</string>
     <string name="val_request_timeout">请求超时</string>

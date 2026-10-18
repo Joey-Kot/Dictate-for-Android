@@ -15,7 +15,7 @@ Dictate is an Android speech transcription and selected-text post-processing too
 - **Custom APIs**: Configure standard OpenAI-compatible audio APIs and Rewrite APIs from different providers, together with models, prompts, and additional request parameters.
 - **Advanced Custom Audio API Provider**: Generate and validate declarative ASR Provider workflows from separate user requirements and vendor documentation. Provides typed controls, conditional visibility, single-select and multi-select controls, and supports one-shot requests, streamed responses, asynchronous polling, and real-time WebSocket transcription.
 - **Segmented upload**: Optionally split long non-realtime ASR work into independent local batches. It uses raw PCM amplitude pauses without removing silence, exports complete media files sequentially through FFmpeg, and bounds concurrent recognition workflows. It supports standard OpenAI-compatible transcription and Advanced non-realtime workflows; realtime and Rewrite are excluded.
-- **Visible ASR failures**: After retries are exhausted, terminal ASR request failures insert a concise, redacted placeholder. Segmented batches preserve that placeholder at the failed segment's source position while retaining successful sibling text; cancellation, configuration, and local-media failures remain ordinary errors.
+- **Visible ASR failures**: After retries are exhausted, terminal ASR request failures insert a concise, redacted placeholder. Valid completed responses with an empty, whitespace-only, or `null` transcript finish normally without output, retries, or placeholders; the exact HTTP 400 `ASR_RESPONSE_HAVE_NO_WORDS` recognition response also means no speech. Segmented batches omit empty transcripts and retain successful sibling text and actual failure placeholders in source order. Cancellation, configuration, and local-media failures remain ordinary errors.
 - **Automatic insertion**: Transcription and rewrite results are inserted at the active cursor or replace the current editable selection. A clipboard copy is retained by default; when that option is disabled, the clipboard is used only as a fallback after a confirmed write failure.
 - **Audio processing**: Choose recording and output formats; FFmpeg is bundled, with no separate installation required.
 - **Local concurrent segmented uploads**: Based on audio-amplitude silence analysis, uses pauses as preferred breakpoints while preserving the complete audio timeline, exports the audio as independent media chunks, and submits them to the ASR API with limited concurrency.
@@ -26,7 +26,7 @@ Dictate is an Android speech transcription and selected-text post-processing too
 - Select text, hold the idle floating button, and choose a prompt from the menu to process the selection. With no selected text or no saved prompts, holding the button resends the previous recording.
 - Configure Provider, Base URL, API Key, and Model independently under **Rewrite API Settings**. Dictate has 22 built-in Rewrite Providers; their request formats, endpoint completion rules, and credentials are listed in [Post-processing configuration](#post-processing-configuration).
 - Prompts default to **Same as main provider**, inheriting all Rewrite API settings. Each prompt can instead use its own Provider, Base URL, API Key, and Model, with a Test connection button that works before saving.
-- Each prompt has an icon, title, instructions, and its own additional JSON parameters. Saved prompts can be edited, deleted, and reordered; choose from eight built-in icons or import SVG, PNG, or JPG.
+- Each prompt has an icon, title, instructions, and its own additional JSON parameters. Saved prompts can be edited, deleted, and reordered; choose from 25 built-in two-tone blue icons or import SVG, PNG, or JPG.
 - Per-prompt JSON overrides request fields, including the selected API's `model`. Nested objects merge recursively, arrays are replaced as a whole, other values overwrite existing values, and object fields explicitly set to `null` are removed from the request.
 - Use your own prompts to polish, rewrite, translate, or summarize existing text or a completed transcription, without starting another recording.
 - Post-processing preserves the previous recording. It shares transcription's processing state, double-tap cancellation, automatic retries, and write behavior: insert at the current cursor, or replace the editable selection present when writing.
@@ -66,13 +66,19 @@ flowchart LR
   OH --> V["Vendor API"]
   AA --> RA["RemoteAudioPublisher"]
   RA --> RS["WebDAV / S3-compatible / OSS"]
-  D --> RT["Bounded PCM tee<br/>Advanced realtime"]
+  D --> RT["RealtimeSessionRunner<br/>bounded PCM tee / complete PCM replay"]
+  C --> RT
   RT --> WS["OkHttp WebSocket"]
   WS --> V
   C --> H["Post-processing providers and JSON merge"]
   H --> PH["Provider-specific post-processing HTTP"]
   PH --> PV["Post-processing provider API"]
-  C --> T["TextDelivery"]
+  F -.-> NR["AsrResponse<br/>exact no-words classification"]
+  AA -.-> NR
+  RT -.-> NR
+  C -->|"Non-test result with text or a failure placeholder"| T["TextDelivery"]
+  C -->|"Non-test completed ASR aggregate is blank"| NS["completeNoSpeech<br/>normal completion / Idle"]
+  C -->|"Connection test"| CT["ConnectionTestResult<br/>no text delivery"]
   T --> W["Accessibility insertion pipeline"]
   W -->|"Android 13+"| M["AccessibilityInputConnection<br/>commitText + verification"]
   W -->|"Android 8–12<br/>or confirmed-failure fallback"| S["ACTION_SET_TEXT<br/>cursor insertion or selection replacement"]
@@ -82,7 +88,32 @@ flowchart LR
   I -->|"direct insertion explicitly failed"| P["ACTION_PASTE"]
   P --> X
   J["Settings<br/>standard + Advanced + segmented upload"] --> K["Preferences + Keystore"]
+  J --> PI["PromptIconStore"]
+  L --> PI
+  PI --> BI["25 VectorDrawable resources"]
+  PI --> CI["Private custom icon files"]
 ```
+
+The no-speech and connection-test nodes are controller branches, not additional job states. Child segment results return to their parent batch before the controller decides whether the complete result needs delivery. The shared no-words classifier is used by ASR clients; Rewrite keeps its own response validation.
+
+### Implementation map
+
+Paths below are relative to `app/src/main/java/com/joeykot/dictate/` unless a resource path is shown.
+
+| Module | Responsibility relevant to empty recognition and prompt icons |
+|---|---|
+| `network/AsrResponse.kt` | Shared exact no-words code matching, with an HTTP-400-only wrapper. |
+| `network/TranscriptionClient.kt` | Legacy HTTP response validation; top-level `text` must exist and be a string or explicit `null`. |
+| `advanced_audio/JsonPath.kt` | Bounded scalar extraction; opt-in `nullAsEmpty` for transcript fields only. |
+| `advanced_audio/TranscriptAccumulator.kt` | Text assembly and `OPEN / COMPLETE / FAILED` lifecycle; `isTranscriptText` identifies the four nullable text actions. |
+| `advanced_audio/AdvancedAudioClient.kt` | Request, HTTP stream, and async-poll execution; no-words termination, retries, cancellation checks, and remote cleanup. |
+| `advanced_audio/realtime/RealtimeSessionRunner.kt` | WebSocket rules and completion; retains the guard against completing before live PCM has ended. |
+| `advanced_audio/WorkflowSchemaDescription.kt` | Documents nullable transcript semantics for workflow generation without relaxing control-field extraction. |
+| `job/VoiceJobController.kt` | Aggregate child results, distinguish empty ASR success from failure, and route whole-job completion or text delivery. |
+| `model/PostProcessingConfig.kt`, `settings/PostProcessingSettingsCodec.kt` | Prompt icon ID, optional custom filename, object defaults, and JSON persistence. |
+| `util/PromptIconStore.kt`, `app/src/main/res/drawable/prompt_icon_*.xml` | Ordered built-in icon catalogue, Android vector loading, custom import, and display fallback. |
+| `ui/PostProcessingSettingsView.kt`, `overlay/PostProcessingMenuView.kt` | Horizontal icon picker and menu presentation; the editor owns pending imports and persists prompts independently. |
+| `settings/PromptIconAssets.kt`, `settings/SettingsRepository.kt` | Referenced custom-image export/import and cleanup after successful settings persistence. |
 
 ## Request Sequence
 
@@ -115,7 +146,7 @@ sequenceDiagram
         J->>V: POST one transcription request per segment
         V-->>J: Segment text
       end
-      Note over J,V: Join source-order text; terminal request failures become safe placeholders at their source position
+      Note over J,V: Wait for the batch; omit blank successes, preserve nonblank text, and retain actual failure placeholders in source order
     else Segmented upload disabled
       J->>F: Transcode with current settings
       J->>V: POST OpenAI-compatible transcription request
@@ -136,7 +167,7 @@ sequenceDiagram
         Note over J,V: Poll/result may retry, but submit is never retried
         V-->>J: Segment text
       end
-      Note over J,V: Join source-order text; terminal request failures become safe placeholders at their source position
+      Note over J,V: Wait for the batch; omit blank successes, preserve nonblank text, and retain actual failure placeholders in source order
     else Segmented upload disabled
       J->>F: Transcode with current settings
       opt Workflow requires a remote audio reference
@@ -160,6 +191,7 @@ sequenceDiagram
       J->>V: Replay complete local PCM from zero
     end
     V-->>J: Final response text
+    Note over J,V: Empty pause sessions are successful children; aggregate only after recording stops and every session is terminal
   else Text selected and saved prompts exist
     U->>O: Hold idle button
     O->>A: Read current selected text
@@ -171,45 +203,54 @@ sequenceDiagram
     P-->>J: Final response text
   end
 
-  Note over J,V: Segmented batches retain every PCM frame including silence; cancellation returns no text, while terminal request failures retain a safe source-position placeholder
+  Note over J,V: Segmented batches retain every PCM frame; a blank child does not finish the parent job, and cancellation delivers no text
 
-  J->>J: Remain requesting and enter delivery phase
-  J->>D: Deliver text with job and cancellation guard
-  D->>A: Insert or replace using current focus and selection
+  alt Connection test
+    J-->>U: Return ConnectionTestResult; completed empty ASR is successful
+    Note over J,C: No editor or clipboard writes
+  else Complete ASR result or aggregate is blank
+    J->>J: completeNoSpeech and normal cleanup
+    J-->>O: Idle / No speech detected
+    Note over J,C: No insertion, selection replacement, clipboard writes, placeholder, or automatic retry
+  else Nonblank transcript, actual failure placeholder, or successful Rewrite
+    J->>J: Remain requesting and enter delivery phase
+    J->>D: Deliver text with job and cancellation guard
+    D->>A: Insert or replace using current focus and selection
 
-  alt Android 13 or later
-    A->>E: Capture surrounding text before insertion
-    A->>E: commitText(text)
+    alt Android 13 or later
+      A->>E: Capture surrounding text before insertion
+      A->>E: commitText(text)
 
-    loop Checks at zero, one hundred, and three hundred milliseconds
-      A->>E: Capture surrounding text and verify
+      loop Checks at zero, one hundred, and three hundred milliseconds
+        A->>E: Capture surrounding text and verify
+      end
+
+      alt Confirmed
+        Note over A,E: Return confirmed
+      else Explicitly not applied
+        A->>E: ACTION_SET_TEXT
+      else Unconfirmed
+        Note over A,E: Do not retry or use the clipboard fallback<br/>when always-copy is off, to avoid duplicate insertion
+      end
+
+    else Android 8 to 12
+      A->>E: ACTION_SET_TEXT and ignore displayed hint text
     end
 
-    alt Confirmed
-      Note over A,E: Return confirmed
-    else Explicitly not applied
-      A->>E: ACTION_SET_TEXT
-    else Unconfirmed
-      Note over A,E: Do not retry or use the clipboard fallback<br/>when always-copy is off, to avoid duplicate insertion
+    A-->>D: Confirmed, failed, or unconfirmed
+
+    opt Always copy enabled, or direct insertion explicitly failed
+      D->>C: Copy result text
     end
 
-  else Android 8 to 12
-    A->>E: ACTION_SET_TEXT and ignore displayed hint text
+    opt Direct insertion failed and copy succeeded
+      D->>A: ACTION_PASTE
+      A->>E: Paste into current focus
+    end
+
+    D-->>J: Complete callback if the job is still current
+    J-->>U: Completion result or failure message
   end
-
-  A-->>D: Confirmed, failed, or unconfirmed
-
-  opt Always copy enabled, or direct insertion explicitly failed
-    D->>C: Copy result text
-  end
-
-  opt Direct insertion failed and copy succeeded
-    D->>A: ACTION_PASTE
-    A->>E: Paste into current focus
-  end
-
-  D-->>J: Complete callback if the job is still current
-  J-->>U: Completion result or failure message
 ```
 
 Post-processing captures selected text before opening the menu as its input. Both task types resolve the output target at write time; neither binds output to the field or selection present when the request began. Moving the cursor, changing selection, or switching editors while waiting changes where the result is delivered. Both use the same verification and clipboard fallback.
@@ -229,7 +270,9 @@ stateDiagram-v2
   Requesting --> RetryWaiting: legacy, post-processing, or realtime replay retry
   RetryWaiting --> Requesting: single media, post-processing, or realtime replay retry
   RetryWaiting --> Transcoding: segmented upload retry
-  Requesting --> Idle: request or delivery ends
+  Requesting --> Idle: completed ASR aggregate is blank / no delivery
+  Requesting --> Idle: connection test returns
+  Requesting --> Idle: delivery completes or ordinary failure ends
   Transcoding --> Idle
   Recording --> Idle: cancel/discard
   Paused --> Idle: cancel/discard
@@ -243,6 +286,8 @@ stateDiagram-v2
     join with safe terminal-failure placeholders,
     realtime finalization or PCM replay, insertion
     verification, safety copy, and paste fallback
+    Blank child successes do not finish the parent job
+    Live sessions also wait for recordingCompleted
   end note
   note right of Transcoding
     Segmented mode analyzes original PCM,
@@ -256,6 +301,72 @@ stateDiagram-v2
 ```
 
 Internal task states remain idle, recording, paused, transcoding, requesting, and retry waiting. Advanced HTTP stages reuse requesting; their phase-level retries never enter retry waiting or resubmit an async task. Realtime PCM replay retries use retry waiting and restart from byte zero. The menu is an idle presentation state and starts no request. Post-processing enters requesting directly, without recording or transcoding; success, failure, and cancellation do not replace the previous recording.
+
+## ASR result contracts
+
+An empty recognition is a successful result only after the response satisfies its protocol's completion rules. Missing required final-text fields, invalid responses, and streams ending before completion remain errors. An Advanced request using `final_text = plain_body` may legitimately return an empty body when its configured HTTP status and extraction rules accept it. Rewrite does not use the ASR no-speech or failure-placeholder branches.
+
+### Text extraction and no-words classification
+
+| Context | Accepted empty result and retained validation |
+|---|---|
+| Legacy HTTP success | Top-level `text` must exist. Strings are returned unchanged, including empty/whitespace-only strings; JSON `null` becomes `""`. Missing fields, other types, and malformed JSON remain errors. |
+| Advanced request / async final text | `final_text` JSONPath enables `nullAsEmpty`. Existing string, number, and boolean scalar extraction is retained; missing/multiple matches, arrays, objects, and invalid JSON remain errors. Other extractor types retain their existing rules. |
+| HTTP / WebSocket text rules | Only `append_delta`, `replace_partial`, `commit_segment`, and `set_final_text` allow selected JSON `null` as `""`. A text action alone does not complete recognition. |
+| Captures and control rules | `nullAsEmpty` remains disabled for captures, polling conditions, `complete`, `fail`, and other non-text rules. An absent path in a mixed event stream skips that rule; it does not create a successful empty result. |
+
+Empty text actions preserve their normal accumulator meaning: appending `""` adds nothing; replacing partial text with `""` retains committed text; committing `""` clears partial text; setting final text to `""` overrides all earlier accumulated text. Do not trim individual deltas or nonblank results, since provider-supplied spacing may be significant.
+
+`AsrResponse.kt` recognizes only the exact string `ASR_RESPONSE_HAVE_NO_WORDS`. JSON-body matching accepts a root object's `code`, `message`, `info`, or `detail`, a string-valued `error`, or those same four fields inside an `error` object. It does not search arbitrary descendants, match substrings, or treat the transcript's `text` field as an error code.
+
+| Recognition path | When the marker means successful empty recognition |
+|---|---|
+| Legacy HTTP | Status is exactly 400 and the body matches the shared classifier; returns empty success with the original status and elapsed time. |
+| Advanced request / async submit, poll request, result steps | HTTP 400 plus the exact marker raises internal `NoSpeechResponse`, ending the workflow before captures/final-text extraction or later stages. No automatic retry is scheduled. |
+| Advanced HTTP stream response | HTTP 400 plus the exact marker returns `CompletedRequest("", status)` before stream decoding, closes the response, and does not retry. This response-level check is separate from event-rule matching. |
+| Async prepare | `allowNoSpeech = false`; preparation/authentication responses do not use the recognition shortcut. |
+| Poll response not already handled by the HTTP 400 shortcut | For an accepted status, only after workflow conditions select `PollState.FAILURE` is the body checked for no-words. A pending HTTP 200 response containing the marker stays pending; unrelated failures remain failures. The HTTP 400 shortcut takes precedence even when 400 is explicitly accepted by the workflow. |
+| HTTP stream / WebSocket event | A `fail` rule must first match its `event`, `path`, and `equals` constraints. Only then can the extracted value or event JSON carry the marker. The matched event sets authoritative final text to `""` and completes recognition. |
+
+Other HTTP errors, including 401, 403, 408, 429, and 5xx, do not become successful merely because their body contains the marker. These constraints apply before the controller's blank-text check; that check cannot turn a malformed or incomplete response into success.
+
+### HTTP stream termination
+
+`TranscriptAccumulator` still has only `OPEN`, `COMPLETE`, and `FAILED` states. `StreamRuleResult.NO_SPEECH_COMPLETE` is a separate HTTP rule-execution outcome, not another accumulator or job state. Ordinary `complete` returns `CONTINUE` to the reader so subsequent matched actions are still validated through EOF. A matched no-words failure returns `NO_SPEECH_COMPLETE`, ending both the current decoded batch and the outer read loop. All six `push`/`finish` call sites for SSE, NDJSON, and JSON_CHUNKS propagate this result.
+
+```mermaid
+flowchart TD
+  A["Matched HTTP stream rule"] --> B{"FAIL with exact no-words marker?"}
+  B -->|"Yes"| N["Set authoritative final to empty<br/>complete accumulator"]
+  N -->|"Accepted"| S["NO_SPEECH_COMPLETE<br/>stop batch and outer read loop"]
+  N -->|"Accumulator already terminal"| E["StreamFailure"]
+  B -->|"No"| O["Apply ordinary transcript action"]
+  O -->|"Rejected action or FAIL"| E
+  O -->|"Accepted / CONTINUE"| R["Continue processing and reading"]
+  R -->|"Next matched rule"| A
+  R -->|"EOF"| C{"Accumulator complete?"}
+  C -->|"No"| E
+  C -->|"Yes"| T["Return final transcript"]
+  S --> Z["Close input stream and HTTP response"]
+  T --> Z
+  E --> Z
+```
+
+The no-words accumulator operations use the same `TranscriptAccumulatorException` to `StreamFailure` conversion as ordinary actions. Consequently, no-words after an ordinary completion cannot erase an already invalid event sequence. Early success still runs input-stream `use` and response `finally` cleanup; it does not wait for the server to close a long-lived connection. Framing errors raised before a decoded event is available remain errors.
+
+WebSocket handling exits its receive loop when the accumulator completes. Empty completion itself does not trigger replay, but `LiveCompletedBeforeSourceEnd` still protects unfinished live PCM: a server completing before the live source ends causes the existing full-recording replay path after recording stops.
+
+### Aggregation, delivery, and cleanup
+
+Legacy and Advanced segmented batches omit only successful items whose entire text is blank. They preserve every nonblank result exactly, add no separators, and keep actual terminal request-failure placeholders at their original source positions. A blank child remains a successful child; the parent waits for its batch before classifying the complete aggregate. Connection tests report actual failures directly instead of inserting placeholders.
+
+Pause-delimited live realtime sessions follow the same text-preservation rule but retain their own lifecycle. Each successful empty session becomes terminal normally. The controller waits for `recordingCompleted` and every session's terminal state before joining nonblank text. An actual live failure still cancels sibling sessions, discards their partial live results, and triggers replay of complete local PCM.
+
+Whole-request or aggregate ASR success with `text.isBlank()` calls `completeNoSpeech()`, which reuses `completeJob()`. Normal jobs return to Idle with localized `No speech detected`, bypassing `TextDelivery`, selection replacement, insertion, clipboard copying/pasting, placeholders, and automatic retries. Connection tests return `success = true` with available status/elapsed metadata; an HTTP 400 no-words response can therefore be a successful test carrying status 400.
+
+A valid original recording is retained once recording finishes, and empty recognition success does not delete it; it remains available for manual resend. Non-realtime requests start after promotion, while live realtime recognition can already be running during capture. Encoded temporary output and batch export directories are cleaned up normally; connection tests also delete their own temporary recording. A saved segmented-upload plan remains associated with the retained recording for subsequent resend. Local `SegmentedUploadPreparationResult.NoSpeech` is a separate pre-request outcome: it still uses `handleSegmentedNoSpeech()`, reports an unsuccessful connection test, and follows the existing local no-speech message path for normal jobs.
+
+Cancellation and late-result guards remain active. Controller callbacks must match the current job ID (and live recording instance where applicable); canceled results cannot reach delivery. Started segmented children are allowed to drain after cancellation so their remote cleanup can finish. Advanced HTTP success checks cancellation again before returning; remote objects are cleaned in `finally`, honoring successful-upload retention for empty success and forcing deletion after failure/cancellation. Cleanup failure does not replace the recognition outcome.
 
 ## Requirements
 
@@ -308,6 +419,25 @@ ANDROID_KEY_PASSWORD
 
 GitHub Actions is the default release path. Pushes to `main` and `dev`, plus manual dispatches with an optional ref, build a signed arm64 APK, generate the standard SHA-256 file, force-update the `Latest` tag, delete old Release assets, and upload only the current pair. One shared concurrency group prevents an older overlapping build from replacing a newer `Latest` publication.
 
+### Regression coverage and validation record
+
+Relevant tests live under `app/src/test/java/com/joeykot/dictate/`:
+
+| Test file | Behavior covered |
+|---|---|
+| `network/AsrResponseTest.kt` | Exact marker and supported JSON locations; reject other HTTP statuses, prefixes/suffixes, wrong locations, and malformed bodies. |
+| `network/PostProcessingClientTest.kt` | Includes Legacy ASR empty/whitespace/null success, HTTP 400 no-words, and rejection of missing/malformed/wrong-type text, alongside existing Rewrite tests. |
+| `advanced_audio/AdvancedAudioClientTest.kt` | Empty request/async results; no-words stops later stages without retry; prepare/authentication and pending-poll boundaries; three stream formats stop on no-words without another read, ignore decoded tail frames, close resources, and preserve ordinary-complete errors; cancellation before remote cleanup. |
+| `advanced_audio/realtime/RealtimeSessionRunnerTest.kt` | Empty/null final text and matched no-words override partial text; incomplete or failed streams remain errors; live completion before source end remains rejected for replay. |
+| `job/AdvancedAudioJobTest.kt` | Empty connection-test success, Legacy/Advanced all-empty and mixed segmented results, no delivery/clipboard change, empty realtime replay success, and cancellation during request or retry. |
+| `util/PromptIconStoreTest.kt` | Custom SVG/PNG/JPG import, size limits, decode-failure cleanup, referenced-file retention, and fallback. |
+| `ui/PromptIconImportLifecycleTest.kt` | Editor recreation, pending import restart, deletion, and isolation/cleanup of late import results. |
+| `settings/SettingsRepositoryPostProcessingTest.kt` | Custom icon export/import, fresh filenames, read-only import preview, missing assets, and unsafe filenames. |
+
+The latest local validation after the HTTP-stream fix ran `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` with JDK 17 and the Android SDK/NDK described above. Results: 359 tests across 59 suites, 358 passed, 1 skipped, no failures/errors; Lint reported 0 errors and 23 warnings. Debug packaging, including the FFmpeg build task, succeeded; the APK is `app/build/outputs/apk/debug/app-debug.apk`. These are recorded results for this change, not an invariant test count or a warning-free baseline.
+
+Static icon review checked all 25 IDs/resources, matching path/fill data against the Windows SVG set, equal-axis scaling, absence of theme tint, and all 150 icon labels across six languages. Static checks, Robolectric tests, and APK compilation do not establish Android device visual or accessibility acceptance. No new Android device acceptance was performed in this review/fix. Device checks should cover light/dark rendering and horizontal selection, custom import/save/cancel/restart, and empty recognition in single, segmented, and live pause/resume workflows with existing selection and clipboard contents. Live pause-session aggregation was checked in code; the empty-result controller regression directly exercises replay and segmented batches, not a complete live pause/resume device session.
+
 ## How to use (Configure)
 
 1. Grant microphone permission and enable Dictate in Android accessibility settings. Notifications can be enabled or disabled from the switch in **Display Settings**.
@@ -327,6 +457,8 @@ The notification switch reflects the system's actual app and recording-channel s
 Enable this opt-in mode when the usual OpenAI-compatible transcription route does not cover a provider's protocol. Paste a compatible declarative workflow, or describe the requirement and provide vendor documentation or request examples to generate one. Validate and apply the workflow before filling its dynamically generated values and secrets.
 
 Remote audio settings appear only when the validated workflow delivers audio by public HTTPS URL or cloud URI. Choose WebDAV, S3-compatible storage, or Aliyun OSS when required. **Test workflow** uses the current, unsaved draft together with its declared values and secrets against the real endpoint.
+
+See [ASR result contracts](#asr-result-contracts) for transcript extraction, no-words stage boundaries, and HTTP stream termination rules.
 
 ### Segmented Upload Settings
 
@@ -410,11 +542,40 @@ Add a prompt or tap an existing entry to edit its Provider, icon, title, instruc
 
 New prompts and prompts saved before this feature default to **Same as main provider**. Here, “main” means the shared **Rewrite API Settings**, including the entire Provider, Base URL, API Key, and Model configuration. Selecting a specific Provider uses only that prompt's API fields, even when its Provider matches the main Provider; empty fields do not fall back to shared values. Switching back to inheritance hides and retains the independent fields and key without using them for requests.
 
-Choose from eight built-in icons or import SVG, PNG, or JPG. Custom icons are copied into private app storage, limited to 1 MiB each and 8 MiB total. Configuration exports carry referenced icons; unavailable or invalid images fall back to a built-in icon.
+Choose from 25 built-in two-tone blue icons or import SVG, PNG, or JPG. Custom icons are copied into private app storage, limited to 1 MiB each and 8 MiB total. Configuration exports carry referenced icons; unavailable or invalid images fall back to a built-in icon.
 
 The shared Test connection button sends a minimal text request using the current shared fields and follows Retry Settings. Transcription and normal prompt execution also follow those settings. Each prompt execution resolves its API settings once; changing settings while it runs does not change the API, input, additional JSON, or retry parameters for that task.
 
 Selecting an independent Provider reveals a Test connection button inside the prompt editor. It tests the current, unsaved Provider, Base URL, API Key, and Model with fixed minimal instructions and input, ignoring the prompt's title, instructions, and additional JSON. It sends one request with no automatic retries and displays the result without saving or writing to the editor or clipboard. Editing API fields or changing Provider, closing the dialog, or destroying the activity cancels that test. Screen rotation retains the draft and cancels the test without restarting it. The shared connection test likewise does not write to the editor or clipboard.
+
+### Prompt icon implementation
+
+`PromptIconStore.builtins` is the source of truth for built-in IDs, labels, resources, and horizontal picker order:
+
+```json
+[
+  "chat", "messages", "translate", "eye", "feather",
+  "document", "shield", "pie_chart", "tags", "text_card",
+  "box", "flask", "globe", "cookie", "window",
+  "plug", "settings", "layers", "key", "network",
+  "hierarchy", "bar_chart", "microphone", "fingerprint", "layout"
+]
+```
+
+The previous hand-drawn `BuiltinDrawable` has been removed. Each ID uses `app/src/main/res/drawable/prompt_icon_<id>.xml`, preserving the supplied SVG paths and blue fills `#64B5F6` / `#1E88E5`. The resources use a 48dp square size and 1024-square viewport with equal-axis group scaling to normalize visible artwork and retain transparent margins. They are loaded as mutable Android `VectorDrawable` instances without theme tint. Six `values*/strings_prompts.xml` files supply localized labels through `AppStrings`.
+
+Android retains its `HorizontalScrollView` picker. Built-in cells are 52dp squares with 5dp padding and 4dp spacing; the selected item has a circular outline, an existing custom preview appears at the end, and the import button is below the row. Selecting a built-in sets `selectedIcon` and clears the custom reference. Picker/menu images use `FIT_CENTER` and preserve the original colors in both themes. This change does not introduce a popup matrix or an application-level bitmap cache; views hold their loaded Drawables, and custom-file loads decode through `PromptIconStore`.
+
+`PromptConfig` defaults to `icon = "chat"`, `customIcon = null`; missing editor-instance-state icon values also restore as `chat`. Configuration JSON stores `icon` as a required string and `customIcon` as an optional filename (encoded as `null` when absent). Object defaults do not make a missing JSON `icon` valid. Display lookup is valid custom image → saved valid built-in ID → `chat`. Unknown IDs fall back only when rendering: no old-ID migration, alias table, or persisted-ID rewrite is performed.
+
+Custom image lifecycle is owned by the prompt editor and repository:
+
+1. The document picker accepts SVG, PNG, and JPEG. A bounded read detects actual content, enforces 1 MiB per file and 8 MiB for the icon directory, writes a new UUID filename under `filesDir/icons/`, and decodes it before accepting the import. Decode/write failure removes that new file and preserves the saved icon.
+2. Imports run on `ICON_EXECUTOR`; the result includes the decoded preview for the UI. Editor session IDs reject late results after cancellation, replacement, or destruction and clean up unused files. Instance state retains the selected IDs, imported-file set, and pending URI so recreation can restore the draft and restart unfinished import work.
+3. Prompt-dialog Save independently persists the prompt through `savePrompts()`; it does not wait for the main settings Save. Only after successful persistence are old unreferenced icons removed. Save failure leaves the draft available for retry. Cancel removes this editor's newly imported files only when no saved prompt references them.
+4. PNG/JPG decoding uses bounded sampled bitmaps; AndroidSVG renders SVG into a transparent bitmap. The current Android importer has no additional application-level SVG external-resource rejection policy; do not describe the Windows SVG filter or cache as an Android feature.
+
+Configuration export embeds referenced existing custom files in `promptIconAssets` as filename-to-Base64 entries. Preview validates safe names, reference relationships, encoding, and byte limits without installing files or decoding images. Applying an import assigns fresh UUID filenames and rewrites `customIcon`; a reference without a supplied asset becomes `null`. Failed file installation or settings persistence removes that import's newly created files. Missing or undecodable display resources follow the normal fallback chain.
 
 ### Additional JSON merging
 

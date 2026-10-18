@@ -133,6 +133,96 @@ class RealtimeSessionRunnerTest {
     }
 
     @Test
+    fun completedEmptyTranscriptReplacesPartialTextIncludingJsonNull() {
+        listOf("\"\"" to "", "\" \\t\"" to " \t", "null" to "").forEach { (field, expected) ->
+            val socket = FakeWebSocket().apply {
+                onText = { text ->
+                    if (text == "finish") {
+                        events += RealtimeWebSocketEvent.Text("""{"event":"partial","text":"discard this partial"}""")
+                        events += RealtimeWebSocketEvent.Text("""{"event":"done","text":$field}""")
+                    }
+                }
+            }
+            val result = RealtimeSessionRunner(FakeFactory(socket)).run(
+                workflow = workflow(
+                    finish = listOf(RealtimeMessage.Text("finish")),
+                    rules = listOf(
+                        StreamRule(event = "partial", path = "$.text", action = StreamAction.REPLACE_PARTIAL),
+                        StreamRule(event = "done", path = "$.text", action = StreamAction.SET_FINAL_TEXT),
+                    ),
+                ),
+                values = emptyMap(),
+                secrets = emptyMap(),
+                runtime = RuntimeTemplateValues(),
+                source = ListSource(emptyList()),
+            )
+            assertEquals(expected, result.text)
+            assertTrue(socket.closed)
+        }
+    }
+
+    @Test
+    fun matchedNoWordsFailureIsAnEmptyRealtimeCompletion() {
+        val socket = FakeWebSocket().apply {
+            onText = { text ->
+                if (text == "finish") {
+                    events += RealtimeWebSocketEvent.Text("""{"event":"partial","text":"discard this partial"}""")
+                    events += RealtimeWebSocketEvent.Text("""{"event":"error","code":"ASR_RESPONSE_HAVE_NO_WORDS","message":"no speech"}""")
+                }
+            }
+        }
+        val result = RealtimeSessionRunner(FakeFactory(socket)).run(
+            workflow = workflow(
+                finish = listOf(RealtimeMessage.Text("finish")),
+                rules = listOf(
+                    StreamRule(event = "partial", path = "$.text", action = StreamAction.REPLACE_PARTIAL),
+                    StreamRule(event = "error", path = "$.message", action = StreamAction.FAIL),
+                    StreamRule(event = "error", action = StreamAction.COMPLETE),
+                ),
+            ),
+            values = emptyMap(),
+            secrets = emptyMap(),
+            runtime = RuntimeTemplateValues(),
+            source = ListSource(emptyList()),
+        )
+        assertEquals("", result.text)
+        assertTrue(socket.closed)
+    }
+
+    @Test
+    fun emptyRealtimePayloadWithoutCompletionOrWithFailureIsStillAnError() {
+        listOf(
+            """{"event":"partial","text":null}""",
+            """{"event":"error","message":null}""",
+            """{"event":"error","message":"failed"}""",
+            """{"event":"done","text":{}}""",
+        ).forEach { frame ->
+            val socket = FakeWebSocket().apply {
+                onText = { text ->
+                    if (text == "finish") events += RealtimeWebSocketEvent.Text(frame)
+                }
+            }
+            val failure = capture {
+                RealtimeSessionRunner(FakeFactory(socket)).run(
+                    workflow = workflow(
+                        finish = listOf(RealtimeMessage.Text("finish")),
+                        rules = listOf(
+                            StreamRule(event = "partial", path = "$.text", action = StreamAction.REPLACE_PARTIAL),
+                            StreamRule(event = "done", path = "$.text", action = StreamAction.SET_FINAL_TEXT),
+                            StreamRule(event = "error", path = "$.message", action = StreamAction.FAIL),
+                        ),
+                    ),
+                    values = emptyMap(),
+                    secrets = emptyMap(),
+                    runtime = RuntimeTemplateValues(),
+                    source = ListSource(emptyList()),
+                )
+            }
+            assertTrue("$frame: $failure", failure is RealtimeSessionException)
+        }
+    }
+
+    @Test
     fun rejectsInvalidBinaryTextWithoutReturningPartialTranscript() {
         val socket = FakeWebSocket().apply {
             onText = { text ->

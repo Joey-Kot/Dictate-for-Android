@@ -1231,7 +1231,9 @@ class VoiceJobController(
                     val text = StringBuilder()
                     for (outcome in result.outcomes) {
                         when (val outcomeResult = outcome.result) {
-                            is SegmentedUploadBatchRunner.TaskResult.Success -> text.append(outcomeResult.text)
+                            is SegmentedUploadBatchRunner.TaskResult.Success -> {
+                                if (outcomeResult.text.isNotBlank()) text.append(outcomeResult.text)
+                            }
                             is SegmentedUploadBatchRunner.TaskResult.Failure -> {
                                 if (job.mode.connectionTest) {
                                     return SegmentedRequestResult.Legacy(outcomeResult.error)
@@ -1412,7 +1414,9 @@ class VoiceJobController(
                     val text = StringBuilder()
                     for (outcome in result.outcomes) {
                         when (val outcomeResult = outcome.result) {
-                            is SegmentedUploadBatchRunner.TaskResult.Success -> text.append(outcomeResult.text)
+                            is SegmentedUploadBatchRunner.TaskResult.Success -> {
+                                if (outcomeResult.text.isNotBlank()) text.append(outcomeResult.text)
+                            }
                             is SegmentedUploadBatchRunner.TaskResult.Failure -> {
                                 if (job.mode.connectionTest) {
                                     return SegmentedRequestResult.Advanced(outcomeResult.error)
@@ -1718,9 +1722,15 @@ class VoiceJobController(
             return
         }
 
-        // Windows preserves provider text exactly when concatenating successful
-        // pause-delimited sessions; no separator is invented at this layer.
-        deliverResult(job.id, recording.segments.joinToString(separator = "") { it.text.orEmpty() })
+        // Ignore sessions with no recognizable words while preserving every
+        // nonblank provider result, including its spacing, exactly.
+        val text = recording.segments.mapNotNull { it.text?.takeIf(String::isNotBlank) }
+            .joinToString(separator = "")
+        if (text.isBlank()) {
+            completeNoSpeech(job.id)
+        } else {
+            deliverResult(job.id, text)
+        }
     }
 
     private fun startRealtimeReplay(job: ActiveJob, recording: RealtimeRecording) {
@@ -1813,7 +1823,9 @@ class VoiceJobController(
         val elapsedMillis = (System.nanoTime() - replay.startedAtNanos) / NANOS_PER_MILLISECOND
         if (result.isSuccess) {
             val text = result.getOrThrow().text
-            if (job.mode.connectionTest) {
+            if (text.isBlank()) {
+                completeNoSpeech(jobId, elapsedMillis = elapsedMillis)
+            } else if (job.mode.connectionTest) {
                 completeJob(
                     jobId,
                     ConnectionTestResult(
@@ -2026,7 +2038,9 @@ class VoiceJobController(
         val runtime = job.runtimeSettings ?: return
         when (result) {
             is AdvancedAudioClient.Result.Success -> {
-                if (job.mode.connectionTest) {
+                if (result.text.isBlank()) {
+                    completeNoSpeech(jobId, result.statusCode, result.elapsedMillis)
+                } else if (job.mode.connectionTest) {
                     completeJob(
                         jobId,
                         ConnectionTestResult(

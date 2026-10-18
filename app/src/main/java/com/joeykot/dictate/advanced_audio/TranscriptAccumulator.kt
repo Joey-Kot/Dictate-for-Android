@@ -164,3 +164,8 @@ private fun nonemptyFailureMessage(message: String): String = if (message.trim()
 } else {
     message
 }
+
+/** Only transcript payloads allow JSON null to mean no recognized text. */
+internal val StreamAction.isTranscriptText: Boolean
+    get() = this == StreamAction.APPEND_DELTA || this == StreamAction.REPLACE_PARTIAL ||
+        this == StreamAction.COMMIT_SEGMENT || this == StreamAction.SET_FINAL_TEXT

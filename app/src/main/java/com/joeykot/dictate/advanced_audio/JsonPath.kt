@@ -20,11 +20,11 @@ class JsonPath internal constructor(
     fun query(root: JsonValue): List<JsonValue> =
         query.evaluate(current = root, root = root, state = EvaluationState())
 
-    fun extractOne(root: JsonValue): String {
+    fun extractOne(root: JsonValue, nullAsEmpty: Boolean = false): String {
         val matches = query(root)
         return when (matches.size) {
             0 -> throw JsonPathException.NoMatch
-            1 -> scalar(matches.single())
+            1 -> if (nullAsEmpty && matches.single() === JsonValue.Null) "" else scalar(matches.single())
             else -> throw JsonPathException.MultipleMatches(matches.size)
         }
     }
@@ -32,7 +32,7 @@ class JsonPath internal constructor(
     companion object {
         fun parse(input: String): JsonPath = PathParser(input).parse()
 
-        fun extractOne(body: ByteArray, path: String): String {
+        fun extractOne(body: ByteArray, path: String, nullAsEmpty: Boolean = false): String {
             if (body.size > MAX_JSONPATH_RESPONSE_BYTES) throw JsonPathException.InvalidJson
             val text = try {
                 StandardCharsets.UTF_8.newDecoder()
@@ -48,7 +48,7 @@ class JsonPath internal constructor(
             } catch (_: IllegalArgumentException) {
                 throw JsonPathException.InvalidJson
             }
-            return parse(path).extractOne(root)
+            return parse(path).extractOne(root, nullAsEmpty)
         }
 
         private fun scalar(value: JsonValue): String = when (value) {

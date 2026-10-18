@@ -40,8 +40,7 @@
     <string name="val_audio_missing">Le fichier audio à envoyer est absent ou vide</string>
     <string name="val_response_object">La réponse n’est pas un objet JSON valide</string>
     <string name="val_response_text_missing">Le champ text de premier niveau est absent de la réponse</string>
-    <string name="val_response_text_type">Le champ text de premier niveau doit être une chaîne</string>
-    <string name="val_response_text_empty">Le champ text de premier niveau ne peut pas être vide</string>
+    <string name="val_response_text_type">Le champ text de premier niveau doit être une chaîne ou null</string>
     <string name="val_transcription_connect_timeout">Délai de connexion au service de transcription dépassé</string>
     <string name="val_transcription_read_timeout">Délai d’attente de la réponse de transcription dépassé</string>
     <string name="val_request_timeout">Délai de la requête dépassé</string>
