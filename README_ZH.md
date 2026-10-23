@@ -46,7 +46,7 @@ Dictate 是 Android 语音转写与选中文本后处理工具，通过不抢焦
 ### 选中文本后处理功能介绍
 
 - **选区操作菜单**：选中文本后长按空闲悬浮按钮，展开提示词列表，点击条目即可执行；没有选中文本或尚未保存提示词时，长按继续重发上一条录音。
-- **独立服务配置**：在「改写 API 设置」中单独配置 Provider、Base URL、API Key 和 Model。内置 22 个 Rewrite Provider；请求格式、端点补全规则和认证方式见[后处理配置](#后处理配置)。
+- **独立服务配置**：在「改写 API 设置」中单独配置 Provider、Base URL、API Key 和 Model。内置 25 个 Rewrite Provider；请求格式、端点补全规则和认证方式见[后处理配置](#后处理配置)。
 - **每条提示词独立选择 Provider**：默认「与主 Provider 相同」（Same as main provider），继承整套改写 API 设置；也可设置独立 Provider、Base URL、API Key 和 Model，并在保存前测试连接。
 - **自定义提示词与图标**：每项包含图标、标题、实际提示词及独立附加 JSON，支持新增、编辑、删除和排序。内置 25 个深浅蓝双色图标，也可导入 SVG、PNG、JPG。
 - **按提示词覆盖模型和参数**：各条目的附加 JSON 可覆盖所选 API 的 Model 及其他请求字段；嵌套对象逐层合并，数组整体替换，其他值直接覆盖，显式为 `null` 的对象字段在请求中删除。
@@ -135,7 +135,7 @@ Dictate 是 Android 语音转写与选中文本后处理工具，通过不抢焦
 
 ### 后处理配置
 
-公共配置依次为 Provider、Base URL、API Key、Model，下方是「新增提示词」、已保存条目和「测试连接」。内置 22 个 Rewrite Provider。提示词放入对应 Provider 的系统／开发者级指令位置，选中文本作为用户输入。
+公共配置依次为 Provider、Base URL、API Key、Model，下方是「新增提示词」、已保存条目和「测试连接」。内置 25 个 Rewrite Provider。提示词放入对应 Provider 的系统／开发者级指令位置，选中文本作为用户输入。
 
 | Provider | 配置 ID | 由 Base URL 生成的请求格式与端点 | API Key 字段中凭据的发送方式 |
 |---|---|---|---|
@@ -147,12 +147,15 @@ Dictate 是 Android 语音转写与选中文本后处理工具，通过不抢焦
 | Anthropic / Claude | `anthropic_claude` | Messages；`/v1/messages` | `x-api-key` 与 `anthropic-version: 2023-06-01` |
 | Google / Gemini | `google_gemini` | Gemini `generateContent`；`/v1beta/models/{model}:generateContent` | `x-goog-api-key` |
 | Google / Vertex AI | `google_vertex_ai` | Gemini `generateContent`；Base URL 必须包含 `/v1/projects/{project}/locations/{location}/publishers/google`，再补全 `/models/{model}:generateContent` | OAuth Bearer access token |
-| xAI / Grok | `xai_grok` | Chat Completions；`/v1/chat/completions` | Bearer token |
+| xAI Grok / Responses | `xai_grok_responses` | Responses；`/v1/responses` | Bearer token |
+| xAI Grok / Chat Completions | `xai_grok_chat_completions` | Chat Completions；`/v1/chat/completions` | Bearer token |
 | Alibaba / Qwen Text | `alibaba_qwen_text` | 原生 DashScope Text Generation；`/api/v1/services/aigc/text-generation/generation` | Bearer token；`X-DashScope-SSE: enable` |
 | Alibaba / Qwen Multimodal | `alibaba_qwen_multimodal` | 原生 DashScope Multimodal Generation；`/api/v1/services/aigc/multimodal-generation/generation` | Bearer token；`X-DashScope-SSE: enable` |
-| Moonshot AI / Kimi | `moonshot_ai_kimi` | Chat Completions；`/v1/chat/completions` | Bearer token |
+| Moonshot Kimi / Responses | `moonshot_kimi_responses` | Responses；`/v1/responses` | Bearer token |
+| Moonshot Kimi / Chat Completions | `moonshot_kimi_chat_completions` | Chat Completions；`/v1/chat/completions` | Bearer token |
 | Z.AI / GLM | `z_ai_glm` | Chat Completions；`/api/paas/v4/chat/completions` | Bearer token |
-| DeepSeek / DeepSeek | `deepseek_deepseek` | Chat Completions；`/chat/completions` | Bearer token |
+| DeepSeek / Responses | `deepseek_responses` | Responses；`/responses` | Bearer token |
+| DeepSeek / Chat Completions | `deepseek_chat_completions` | Chat Completions；`/chat/completions` | Bearer token |
 | Volcengine / Ark / Chat Completions | `volcengine_ark_chat_completions` | Chat Completions；`/api/v3/chat/completions` | Bearer token |
 | Volcengine / Ark / Responses | `volcengine_ark_responses` | Responses；`/api/v3/responses` | Bearer token |
 | Baidu / Qianfan | `baidu_qianfan` | Chat Completions；`/v2/chat/completions` | Bearer token |

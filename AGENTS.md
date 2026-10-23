@@ -24,7 +24,7 @@ Dictate is an Android speech transcription and selected-text post-processing too
 ### Introduction to the selected-text processing feature
 
 - Select text, hold the idle floating button, and choose a prompt from the menu to process the selection. With no selected text or no saved prompts, holding the button resends the previous recording.
-- Configure Provider, Base URL, API Key, and Model independently under **Rewrite API Settings**. Dictate has 22 built-in Rewrite Providers; their request formats, endpoint completion rules, and credentials are listed in [Post-processing configuration](#post-processing-configuration).
+- Configure Provider, Base URL, API Key, and Model independently under **Rewrite API Settings**. Dictate has 25 built-in Rewrite Providers; their request formats, endpoint completion rules, and credentials are listed in [Post-processing configuration](#post-processing-configuration).
 - Prompts default to **Same as main provider**, inheriting all Rewrite API settings. Each prompt can instead use its own Provider, Base URL, API Key, and Model, with a Test connection button that works before saving.
 - Each prompt has an icon, title, instructions, and its own additional JSON parameters. Saved prompts can be edited, deleted, and reordered; choose from 25 built-in two-tone blue icons or import SVG, PNG, or JPG.
 - Per-prompt JSON overrides request fields, including the selected API's `model`. Nested objects merge recursively, arrays are replaced as a whole, other values overwrite existing values, and object fields explicitly set to `null` are removed from the request.
@@ -381,12 +381,14 @@ On Android 13 and newer, when accessibility nodes do not expose selected text, D
 
 ## Build from source
 
-Use JDK 17, Android SDK Platform 35, Build Tools 35.0.0, and NDK `27.2.12479018`.
+Use a current JDK 17 security update (17.0.21 or newer), Android SDK Platform 35, Build Tools 36.0.0, and NDK `27.2.12479018`.
 
 ```bash
+export JAVA_HOME=/path/to/jdk-17
 export ANDROID_HOME=/path/to/android-sdk
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
 export GRADLE_USER_HOME=/tmp/gradle-user-home
+python3 scripts/harden-jdk-certificates.py "$JAVA_HOME"
 ./gradlew :app:assembleDebug
 ```
 
@@ -394,9 +396,11 @@ export GRADLE_USER_HOME=/tmp/gradle-user-home
 
 Release builds enable R8 code shrinking, optimization, obfuscation, and resource shrinking. CI archives `mapping.txt` as a workflow artifact for recovering original crash stack traces. Debug builds remain unminified.
 
-The native build requires Linux, `make`, `pkg-config`, `curl`, `tar`, and XZ support. The script verifies the FFmpeg `8.1`, Opus `1.5.2`, LAME `3.100`, libogg `1.3.5`, libvorbis `1.3.7`, OpenCORE AMR `0.1.6`, VisualOn AMR-WB `0.1.3`, and Speex `1.2.1` source archives by SHA-256. It builds only AArch64, checks every required demuxer/encoder/muxer/filter, and verifies the resulting Android PIE executable's 16 KiB load alignment. This FFmpeg build uses `--enable-gpl --enable-version3`; dependency licenses and checksums are recorded in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+The build uses AGP 9.4.1, Gradle 9.8.1, and AGP built-in Kotlin overridden to 2.4.21. Buildscript-only constraints upgrade Bouncy Castle to 1.85, Commons Lang to 3.18.0, jose4j to 0.9.6, and JDOM to 2.0.6.1; these overrides do not add APK runtime dependencies. Before starting Gradle, `scripts/harden-jdk-certificates.py` applies the pinned [eMudhra certificate blocklist](https://docs.azul.com/core/emudhra-workaround) to the build JDK while preserving existing blocks; restart any existing Java/Gradle processes afterward. CI applies it immediately after setting up Java.
 
-After the native build, audio integration tests can run the packaged Android binary under QEMU with the Android 8 runtime. They require `qemu-user` (`qemu-aarch64`), `e2fsprogs` (`debugfs`), Python 3, and a host C compiler. The script extracts the runtime without mounting the SDK image and builds an independent FFmpeg 8.1 decoder/probe from the downloaded sources.
+The native build requires Linux, `make`, `pkg-config`, `curl`, `tar`, `patch`, and XZ support. The script verifies the FFmpeg `8.1.3`, Opus `1.5.2`, LAME `3.100`, libogg `1.3.5`, libvorbis `1.3.7`, OpenCORE AMR `0.1.6`, VisualOn AMR-WB `0.1.3`, and Speex `1.2.1` source archives by SHA-256. It applies `scripts/patches/ffmpeg-8.1.3-cve-2026-107678.patch` (upstream PR 24593) before compiling. It builds only AArch64, checks every required demuxer/encoder/muxer/filter, and verifies the resulting Android PIE executable's 16 KiB load alignment. This FFmpeg build uses `--enable-gpl --enable-version3`; dependency licenses and checksums are recorded in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+After the native build, audio integration tests can run the packaged Android binary under QEMU with the Android 8 runtime. They require `qemu-user` (`qemu-aarch64`), `e2fsprogs` (`debugfs`), Python 3, and a host C compiler. The script extracts the runtime without mounting the SDK image and builds an independent FFmpeg 8.1.3 decoder/probe from the downloaded sources.
 
 ```bash
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'system-images;android-26;default;arm64-v8a'
@@ -507,7 +511,7 @@ This table describes local output support. The configured transcription service 
 
 ### Post-processing configuration
 
-Shared fields are Provider, Base URL, API Key, and Model, followed by Add prompt, the saved prompt list, and Test connection. There are 22 built-in Rewrite Providers. The configuration IDs below are the stored values; previous enum-name IDs are not retained. Saved instructions use the provider's system/developer instruction level; selected text supplies the user input.
+Shared fields are Provider, Base URL, API Key, and Model, followed by Add prompt, the saved prompt list, and Test connection. There are 25 built-in Rewrite Providers. The configuration IDs below are the stored values; previous enum-name IDs are not retained. Saved instructions use the provider's system/developer instruction level; selected text supplies the user input.
 
 | Provider | Configuration ID | Request format and endpoint derived from Base URL | Credential sent from API Key |
 |---|---|---|---|
@@ -519,12 +523,15 @@ Shared fields are Provider, Base URL, API Key, and Model, followed by Add prompt
 | Anthropic / Claude | `anthropic_claude` | Messages; `/v1/messages` | `x-api-key` plus `anthropic-version: 2023-06-01` |
 | Google / Gemini | `google_gemini` | Gemini `generateContent`; `/v1beta/models/{model}:generateContent` | `x-goog-api-key` |
 | Google / Vertex AI | `google_vertex_ai` | Gemini `generateContent`; Base URL must include `/v1/projects/{project}/locations/{location}/publishers/google`, then `/models/{model}:generateContent` is added | OAuth Bearer access token |
-| xAI / Grok | `xai_grok` | Chat Completions; `/v1/chat/completions` | Bearer token |
+| xAI Grok / Responses | `xai_grok_responses` | Responses; `/v1/responses` | Bearer token |
+| xAI Grok / Chat Completions | `xai_grok_chat_completions` | Chat Completions; `/v1/chat/completions` | Bearer token |
 | Alibaba / Qwen Text | `alibaba_qwen_text` | Native DashScope Text Generation; `/api/v1/services/aigc/text-generation/generation` | Bearer token; `X-DashScope-SSE: enable` |
 | Alibaba / Qwen Multimodal | `alibaba_qwen_multimodal` | Native DashScope Multimodal Generation; `/api/v1/services/aigc/multimodal-generation/generation` | Bearer token; `X-DashScope-SSE: enable` |
-| Moonshot AI / Kimi | `moonshot_ai_kimi` | Chat Completions; `/v1/chat/completions` | Bearer token |
+| Moonshot Kimi / Responses | `moonshot_kimi_responses` | Responses; `/v1/responses` | Bearer token |
+| Moonshot Kimi / Chat Completions | `moonshot_kimi_chat_completions` | Chat Completions; `/v1/chat/completions` | Bearer token |
 | Z.AI / GLM | `z_ai_glm` | Chat Completions; `/api/paas/v4/chat/completions` | Bearer token |
-| DeepSeek / DeepSeek | `deepseek_deepseek` | Chat Completions; `/chat/completions` | Bearer token |
+| DeepSeek / Responses | `deepseek_responses` | Responses; `/responses` | Bearer token |
+| DeepSeek / Chat Completions | `deepseek_chat_completions` | Chat Completions; `/chat/completions` | Bearer token |
 | Volcengine / Ark / Chat Completions | `volcengine_ark_chat_completions` | Chat Completions; `/api/v3/chat/completions` | Bearer token |
 | Volcengine / Ark / Responses | `volcengine_ark_responses` | Responses; `/api/v3/responses` | Bearer token |
 | Baidu / Qianfan | `baidu_qianfan` | Chat Completions; `/v2/chat/completions` | Bearer token |

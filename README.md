@@ -46,7 +46,7 @@ Dictate is an Android speech-transcription and selected-text post-processing too
 ### Selected-text post-processing features
 
 - **Selection action menu**: Long-press the idle floating button after selecting text to expand the prompt list, then tap an item to run it. Without selected text or saved prompts, long-press continues to resubmit the most recent recording.
-- **Independent service configuration**: Configure Provider, Base URL, API Key, and Model separately in **Rewrite API Settings**. There are 22 built-in Rewrite providers; see [Post-processing configuration](#post-processing-configuration) for request formats, endpoint completion, and authentication.
+- **Independent service configuration**: Configure Provider, Base URL, API Key, and Model separately in **Rewrite API Settings**. There are 25 built-in Rewrite providers; see [Post-processing configuration](#post-processing-configuration) for request formats, endpoint completion, and authentication.
 - **Per-prompt provider selection**: **Same as Main Provider** is the default and inherits the complete Rewrite API configuration. A prompt can also use its own Provider, Base URL, API Key, and Model, and test the connection before saving.
 - **Custom prompts and icons**: Each item has an icon, title, actual prompt, and independent extra JSON. Items can be added, edited, deleted, and reordered. 25 built-in two-tone blue icons are available, and SVG, PNG, and JPG can be imported.
 - **Per-prompt model and parameter overrides**: A prompt's extra JSON can override the selected API's Model and other request fields. Nested objects merge recursively, arrays are replaced as a whole, other values override directly, and object members explicitly set to `null` are deleted from the request.
@@ -135,7 +135,7 @@ The table describes local output capability. The configured transcription servic
 
 ### Post-processing configuration
 
-The shared configuration is Provider, Base URL, API Key, and Model, followed by **Add Prompt**, saved entries, and **Test connectivity**. There are 22 built-in Rewrite providers. Prompts are placed in the system/developer-level instruction position for the corresponding provider, while selected text is sent as user input.
+The shared configuration is Provider, Base URL, API Key, and Model, followed by **Add Prompt**, saved entries, and **Test connectivity**. There are 25 built-in Rewrite providers. Prompts are placed in the system/developer-level instruction position for the corresponding provider, while selected text is sent as user input.
 
 | Provider | Configuration ID | Request format and endpoint built from Base URL | How the credential from API Key is sent |
 |---|---|---|---|
@@ -147,12 +147,15 @@ The shared configuration is Provider, Base URL, API Key, and Model, followed by 
 | Anthropic / Claude | `anthropic_claude` | Messages; `/v1/messages` | `x-api-key` plus `anthropic-version: 2023-06-01` |
 | Google / Gemini | `google_gemini` | Gemini `generateContent`; `/v1beta/models/{model}:generateContent` | `x-goog-api-key` |
 | Google / Vertex AI | `google_vertex_ai` | Gemini `generateContent`; Base URL must include `/v1/projects/{project}/locations/{location}/publishers/google`, then `/models/{model}:generateContent` is added | OAuth Bearer access token |
-| xAI / Grok | `xai_grok` | Chat Completions; `/v1/chat/completions` | Bearer token |
+| xAI Grok / Responses | `xai_grok_responses` | Responses; `/v1/responses` | Bearer token |
+| xAI Grok / Chat Completions | `xai_grok_chat_completions` | Chat Completions; `/v1/chat/completions` | Bearer token |
 | Alibaba / Qwen Text | `alibaba_qwen_text` | Native DashScope Text Generation; `/api/v1/services/aigc/text-generation/generation` | Bearer token; `X-DashScope-SSE: enable` |
 | Alibaba / Qwen Multimodal | `alibaba_qwen_multimodal` | Native DashScope Multimodal Generation; `/api/v1/services/aigc/multimodal-generation/generation` | Bearer token; `X-DashScope-SSE: enable` |
-| Moonshot AI / Kimi | `moonshot_ai_kimi` | Chat Completions; `/v1/chat/completions` | Bearer token |
+| Moonshot Kimi / Responses | `moonshot_kimi_responses` | Responses; `/v1/responses` | Bearer token |
+| Moonshot Kimi / Chat Completions | `moonshot_kimi_chat_completions` | Chat Completions; `/v1/chat/completions` | Bearer token |
 | Z.AI / GLM | `z_ai_glm` | Chat Completions; `/api/paas/v4/chat/completions` | Bearer token |
-| DeepSeek / DeepSeek | `deepseek_deepseek` | Chat Completions; `/chat/completions` | Bearer token |
+| DeepSeek / Responses | `deepseek_responses` | Responses; `/responses` | Bearer token |
+| DeepSeek / Chat Completions | `deepseek_chat_completions` | Chat Completions; `/chat/completions` | Bearer token |
 | Volcengine / Ark / Chat Completions | `volcengine_ark_chat_completions` | Chat Completions; `/api/v3/chat/completions` | Bearer token |
 | Volcengine / Ark / Responses | `volcengine_ark_responses` | Responses; `/api/v3/responses` | Bearer token |
 | Baidu / Qianfan | `baidu_qianfan` | Chat Completions; `/v2/chat/completions` | Bearer token |

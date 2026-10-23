@@ -4,7 +4,7 @@ Dictate is licensed under `GPL-3.0-or-later`. Runtime, build-only, and test-only
 
 | Component | Exact version | Purpose | Upstream | License | License text | Modifications and build |
 |---|---:|---|---|---|---|---|
-| FFmpeg | `n8.1` | Embedded arm64 CLI for audio normalization | <https://ffmpeg.org/> | `GPL-3.0-or-later` for this `--enable-gpl --enable-version3` build | [`GPL-3.0.txt`](THIRD_PARTY_LICENSES/GPL-3.0.txt) | No source patches. Minimal static Android CLI built by `scripts/build-android-ffmpeg.sh`, stripped and renamed `libffmpeg.so`. |
+| FFmpeg | `n8.1.3` | Embedded arm64 CLI for audio normalization | <https://ffmpeg.org/> | `GPL-3.0-or-later` for this `--enable-gpl --enable-version3` build | [`GPL-3.0.txt`](THIRD_PARTY_LICENSES/GPL-3.0.txt) | CVE-2026-107678 backport from [upstream PR 24593](https://code.ffmpeg.org/FFmpeg/FFmpeg/pulls/24593); commit IDs are in `scripts/patches/ffmpeg-8.1.3-cve-2026-107678.patch`. Minimal static Android CLI built by `scripts/build-android-ffmpeg.sh`, stripped and renamed `libffmpeg.so`. |
 | Opus | `1.5.2` | Opus encoder statically linked into FFmpeg | <https://opus-codec.org/> | 3-clause BSD-style license and patent notices | [`Opus-BSD-3-Clause.txt`](THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt) | No patches; position-independent static build. |
 | LAME | `3.100` | MP3 encoder statically linked into FFmpeg | <https://lame.sourceforge.io/> | `LGPL-2.0-or-later` | [`LGPL-2.0.txt`](THIRD_PARTY_LICENSES/LGPL-2.0.txt) | No patches; frontend and decoder disabled, static encoder linked. |
 | libogg | `1.3.5` | Ogg support for libvorbis | <https://xiph.org/ogg/> | BSD-3-Clause | [`Ogg-BSD-3-Clause.txt`](THIRD_PARTY_LICENSES/Ogg-BSD-3-Clause.txt) | Unmodified, static PIC build. |
@@ -13,19 +13,19 @@ Dictate is licensed under `GPL-3.0-or-later`. Runtime, build-only, and test-only
 | VisualOn AMR-WB | `0.1.3` | AMR-WB encoder | <https://sourceforge.net/projects/opencore-amr/> | Apache-2.0 | [`VisualOn-AMR-WB-Apache-2.0.txt`](THIRD_PARTY_LICENSES/VisualOn-AMR-WB-Apache-2.0.txt) | Unmodified, static PIC build. |
 | Speex | `1.2.1` | Speex encoder | <https://speex.org/> | BSD-3-Clause | [`Speex-BSD-3-Clause.txt`](THIRD_PARTY_LICENSES/Speex-BSD-3-Clause.txt) | Unmodified, static PIC build; tools and examples disabled. |
 | CMU Flite `cmu_us_slt` voice | `2.2` | Source voice for the packaged synthetic connectivity-test clip | <https://github.com/festvox/flite> | CMU permissive notice | [`CMU-Flite.txt`](THIRD_PARTY_LICENSES/CMU-Flite.txt) | No Flite code or voice database is packaged. The word “test” was rendered to 16 kHz mono PCM by `scripts/generate-connectivity-test-audio.sh`; the reference asset used Ubuntu Flite `2.2-6build3` through FFmpeg `6.1.1-3ubuntu5`. |
-| Kotlin standard library | `2.1.10` | Kotlin runtime packaged in the APK | <https://kotlinlang.org/> | `Apache-2.0` | [`Apache-2.0.txt`](THIRD_PARTY_LICENSES/Apache-2.0.txt) | Unmodified. |
+| Kotlin standard library | `2.4.21` | Kotlin runtime packaged in the APK | <https://kotlinlang.org/> | `Apache-2.0` | [`Apache-2.0.txt`](THIRD_PARTY_LICENSES/Apache-2.0.txt) | Unmodified. |
 | AndroidSVG | `1.4` | Rendering user-imported SVG prompt icons | <https://bigbadaboom.github.io/androidsvg/> | `Apache-2.0` | [`Apache-2.0.txt`](THIRD_PARTY_LICENSES/Apache-2.0.txt) | Unmodified `com.caverock:androidsvg-aar` dependency. |
 | OkHttp | `4.12.0` | Advanced Audio API HTTP and WebSocket transport | <https://square.github.io/okhttp/> | `Apache-2.0` | [`Apache-2.0.txt`](THIRD_PARTY_LICENSES/Apache-2.0.txt) | Unmodified `com.squareup.okhttp3:okhttp` dependency. |
 | Okio | `3.6.0` | Byte streams used by OkHttp | <https://square.github.io/okio/> | `Apache-2.0` | [`Apache-2.0.txt`](THIRD_PARTY_LICENSES/Apache-2.0.txt) | Transitive runtime dependency of OkHttp; unmodified. |
 | RE2/J | `1.8` | Linear-time JSONPath `match` / `search` regular-expression engine | <https://github.com/google/re2j> | `BSD-3-Clause` | [`RE2J-BSD-3-Clause.txt`](THIRD_PARTY_LICENSES/RE2J-BSD-3-Clause.txt) | Unmodified `com.google.re2j:re2j` dependency. |
-| Android Gradle Plugin | `8.9.2` | Build-only Android tooling | <https://developer.android.com/build/releases/gradle-plugin> | `Apache-2.0` | [`Apache-2.0.txt`](THIRD_PARTY_LICENSES/Apache-2.0.txt) | Build-only; not packaged. |
-| Gradle Wrapper | `8.11.1` | Reproducible build launcher | <https://gradle.org/> | `Apache-2.0` | [`Apache-2.0.txt`](THIRD_PARTY_LICENSES/Apache-2.0.txt) | Build-only; unmodified. |
+| Android Gradle Plugin | `9.4.1` | Build-only Android tooling | <https://developer.android.com/build/releases/gradle-plugin> | `Apache-2.0` | [`Apache-2.0.txt`](THIRD_PARTY_LICENSES/Apache-2.0.txt) | Build-only; not packaged. |
+| Gradle Wrapper | `9.8.1` | Reproducible build launcher | <https://gradle.org/> | `Apache-2.0` | [`Apache-2.0.txt`](THIRD_PARTY_LICENSES/Apache-2.0.txt) | Build-only; unmodified. |
 | JUnit | `4.13.2` | JVM unit tests | <https://junit.org/junit4/> | `EPL-1.0` | [`EPL-1.0.txt`](THIRD_PARTY_LICENSES/EPL-1.0.txt) | Test-only; not packaged. |
 
 The source build verifies:
 
 ```text
-FFmpeg 8.1  b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a
+FFmpeg 8.1.3  7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
 Opus 1.5.2  65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1
 LAME 3.100  ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
 libogg 1.3.5  c4d91be36fc8e54deae7575241e03f4211eb102afb3fc0775fbbc1b740016705

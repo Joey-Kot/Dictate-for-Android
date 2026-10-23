@@ -25,20 +25,60 @@ class PostProcessingStreamTest {
             data: [DONE]
 
         """.trimIndent()
-        assertEquals("你好", PostProcessingStream.parseText(PostProcessingProvider.OPENAI_COMPATIBLE, stream))
+        listOf(
+            PostProcessingProvider.OPENAI_COMPATIBLE, PostProcessingProvider.XAI_CHAT_COMPLETIONS,
+            PostProcessingProvider.KIMI_CHAT_COMPLETIONS, PostProcessingProvider.DEEPSEEK_CHAT_COMPLETIONS,
+        ).forEach { provider ->
+            assertEquals("你好", PostProcessingStream.parseText(provider, stream))
+        }
     }
 
     @Test
     fun responsesUsesFinalOutputWithoutDuplicatingDeltas() {
         val stream = """
+            data: {"type":"response.reasoning_summary_text.delta","delta":"hidden"}
+
+            event: response.reasoning_text.delta
+            data: {"type":"response.reasoning_text.delta","delta":"hidden"}
+
             event: response.output_text.delta
             data: {"type":"response.output_text.delta","delta":"answer"}
 
             event: response.completed
-            data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}}
+            data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"hidden"}],"summary":[{"type":"summary_text","text":"hidden"}]},{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}}
 
         """.trimIndent()
-        assertEquals("answer", PostProcessingStream.parseText(PostProcessingProvider.OPENAI_RESPONSES, stream))
+        listOf(
+            PostProcessingProvider.OPENAI_RESPONSES, PostProcessingProvider.XAI_RESPONSES,
+            PostProcessingProvider.KIMI_RESPONSES, PostProcessingProvider.DEEPSEEK_RESPONSES,
+        ).forEach { provider ->
+            assertEquals("answer", PostProcessingStream.parseText(provider, stream))
+            assertEquals("answer", PostProcessingStream.parseText(provider, "$stream\n\ndata: [DONE]\n\n"))
+        }
+    }
+
+    @Test
+    fun kimiSearchCompletionWaitsForTheFinalResponse() {
+        val searchAndDraft = """
+            event: response.web_search_call.completed
+            data: {"type":"response.web_search_call.completed","sequence_number":1}
+
+            event: response.reasoning_summary_text.delta
+            data: {"type":"response.reasoning_summary_text.delta","sequence_number":2,"delta":"hidden"}
+
+            event: response.output_text.delta
+            data: {"type":"response.output_text.delta","sequence_number":3,"delta":"draft"}
+
+        """.trimIndent() + "\n\n"
+        assertThrows(PostProcessingRequest.InvalidResponseException::class.java) {
+            PostProcessingStream.parseText(PostProcessingProvider.KIMI_RESPONSES, searchAndDraft)
+        }
+        val completed = """
+            event: response.completed
+            data: {"type":"response.completed","sequence_number":4,"response":{"status":"completed","output":[{"type":"web_search_call","status":"completed","action":{"type":"search","query":"news"}},{"type":"reasoning","summary":[{"type":"summary_text","text":"hidden"}]},{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}}
+
+        """.trimIndent()
+        assertEquals("answer", PostProcessingStream.parseText(PostProcessingProvider.KIMI_RESPONSES, searchAndDraft + completed))
     }
 
     @Test
@@ -84,6 +124,12 @@ class PostProcessingStreamTest {
         assertThrows(PostProcessingStream.ServiceException::class.java) {
             PostProcessingStream.parseText(PostProcessingProvider.OPENAI_COMPATIBLE, partial + "data: {\"error\":{\"message\":\"overloaded\"}}\n\n")
         }
+        listOf(PostProcessingProvider.XAI_RESPONSES, PostProcessingProvider.KIMI_RESPONSES, PostProcessingProvider.DEEPSEEK_RESPONSES).forEach { provider ->
+            assertThrows(PostProcessingRequest.InvalidResponseException::class.java) {
+                PostProcessingStream.parseText(provider,
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
+            }
+        }
     }
 
     @Test
@@ -118,6 +164,52 @@ class PostProcessingStreamTest {
             PostProcessingProvider.AZURE_OPENAI_RESPONSES to
                 """
                     data: {"type":"response.completed","response":{"status":"incomplete","output_text":"partial"}}
+
+                """.trimIndent(),
+            PostProcessingProvider.XAI_RESPONSES to
+                """
+                    data: {"type":"response.output_text.delta","delta":"partial"}
+
+                    data: {"type":"response.incomplete","response":{"status":"incomplete"}}
+
+                    data: [DONE]
+
+                """.trimIndent(),
+            PostProcessingProvider.XAI_CHAT_COMPLETIONS to
+                """
+                    data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}
+
+                    data: [DONE]
+
+                """.trimIndent(),
+            PostProcessingProvider.KIMI_RESPONSES to
+                """
+                    data: {"type":"response.output_text.delta","delta":"partial"}
+
+                    data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}
+
+                    data: [DONE]
+
+                """.trimIndent(),
+            PostProcessingProvider.KIMI_CHAT_COMPLETIONS to
+                """
+                    data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}
+
+                    data: [DONE]
+
+                """.trimIndent(),
+            PostProcessingProvider.DEEPSEEK_RESPONSES to
+                """
+                    data: {"type":"response.output_text.delta","delta":"partial"}
+
+                    data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}
+
+                """.trimIndent(),
+            PostProcessingProvider.DEEPSEEK_CHAT_COMPLETIONS to
+                """
+                    data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}
+
+                    data: [DONE]
 
                 """.trimIndent(),
             PostProcessingProvider.QWEN_TEXT to

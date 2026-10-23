@@ -154,7 +154,7 @@ class DictateAccessibilityServiceTest {
 class SelectionServiceShadow : ShadowAccessibilityService() {
     @Implementation
     @Suppress("DEPRECATION")
-    fun getRootInActiveWindow(): AccessibilityNodeInfo? = root?.let(AccessibilityNodeInfo::obtain)
+    override fun getRootInActiveWindow(): AccessibilityNodeInfo? = root?.let(AccessibilityNodeInfo::obtain)
 
     companion object {
         var root: AccessibilityNodeInfo? = null

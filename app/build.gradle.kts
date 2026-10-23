@@ -1,6 +1,5 @@
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 val releaseStoreFile = providers.environmentVariable("ANDROID_KEYSTORE_PATH").orNull
@@ -16,6 +15,7 @@ val configuredVersionName = providers.environmentVariable("DICTATE_VERSION_NAME"
 android {
     namespace = "com.joeykot.dictate"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.joeykot.dictate"
@@ -69,10 +69,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     packaging {
         jniLibs.useLegacyPackaging = true
         jniLibs.keepDebugSymbols += "**/libffmpeg.so"
@@ -104,19 +100,23 @@ val debugFfmpegBinary = layout.projectDirectory.file("src/main/jniLibs/arm64-v8a
  * unchanged, already-built binary is reused, while a missing binary or a
  * changed build script invokes the existing native build script.
  */
-val buildDebugFfmpeg by tasks.registering(Exec::class) {
+val buildDebugFfmpeg = tasks.register<Exec>("buildDebugFfmpeg") {
     group = "build"
     description = "Builds the arm64 FFmpeg CLI required by Debug APKs."
     inputs.file(ffmpegBuildScript)
+    inputs.file(rootProject.layout.projectDirectory.file("scripts/apply-ffmpeg-security-patch.sh"))
+    inputs.file(rootProject.layout.projectDirectory.file("scripts/patches/ffmpeg-8.1.3-cve-2026-107678.patch"))
     outputs.file(debugFfmpegBinary)
     workingDir(rootProject.projectDir)
     executable = "bash"
     args(ffmpegBuildScript.asFile.absolutePath)
 }
 
-val verifyFfmpegBinary by tasks.registering {
+val verifyFfmpegBinary = tasks.register("verifyFfmpegBinary") {
     group = "verification"
     description = "Checks that the arm64 FFmpeg CLI binary is present for release packaging."
+    // Both variants consume the same file when built in one invocation.
+    mustRunAfter(buildDebugFfmpeg)
     inputs.file(layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libffmpeg.so"))
     doLast {
         val binary = inputs.files.singleFile
@@ -145,5 +145,5 @@ dependencies {
     // may contain vendor-provided regular expressions.
     implementation("com.google.re2j:re2j:1.8")
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("org.robolectric:robolectric:4.17")
 }

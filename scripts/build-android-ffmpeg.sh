@@ -42,10 +42,10 @@ LAME_ARCHIVE="lame-$LAME_VERSION.tar.gz"
 LAME_URL="https://downloads.sourceforge.net/project/lame/lame/$LAME_VERSION/$LAME_ARCHIVE"
 LAME_SHA256="ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
 
-FFMPEG_VERSION=8.1
+FFMPEG_VERSION=8.1.3
 FFMPEG_ARCHIVE="ffmpeg-$FFMPEG_VERSION.tar.xz"
 FFMPEG_URL="https://ffmpeg.org/releases/$FFMPEG_ARCHIVE"
-FFMPEG_SHA256="b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a"
+FFMPEG_SHA256="7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3"
 
 mkdir -p "$DOWNLOAD_DIR" "$SOURCE_DIR" "$BUILD_DIR" "$PREFIX_DIR" "$OUTPUT_DIR"
 
@@ -151,9 +151,10 @@ filters=aformat,anull,aresample,pan
 download_and_verify "$FFMPEG_URL" "$DOWNLOAD_DIR/$FFMPEG_ARCHIVE" "$FFMPEG_SHA256"
 extract_once "$DOWNLOAD_DIR/$FFMPEG_ARCHIVE" "$SOURCE_DIR/ffmpeg-$FFMPEG_VERSION"
 FFMPEG_SOURCE="$SOURCE_DIR/ffmpeg-$FFMPEG_VERSION"
+"$ROOT_DIR/scripts/apply-ffmpeg-security-patch.sh" "$FFMPEG_SOURCE"
 
-mkdir -p "$BUILD_DIR/ffmpeg"
-pushd "$BUILD_DIR/ffmpeg"
+mkdir -p "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
+pushd "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
     PKG_CONFIG_PATH="$PREFIX_DIR/lib/pkgconfig" \
     "$FFMPEG_SOURCE/configure" \
         --prefix="$PREFIX_DIR/ffmpeg" \
@@ -230,7 +231,7 @@ check_components FILTER "$filters"
 make -j"$JOBS" ffmpeg
 popd
 
-install -m 0755 "$BUILD_DIR/ffmpeg/ffmpeg" "$OUTPUT_DIR/libffmpeg.so"
+install -m 0755 "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION/ffmpeg" "$OUTPUT_DIR/libffmpeg.so"
 "$READELF" -h "$OUTPUT_DIR/libffmpeg.so"
 "$READELF" -lW "$OUTPUT_DIR/libffmpeg.so"
 "$READELF" -h "$OUTPUT_DIR/libffmpeg.so" | grep -q 'Type:.*DYN'

@@ -15,12 +15,15 @@ class PromptConfigTest {
                 "anthropic_claude" to "Anthropic / Claude",
                 "google_gemini" to "Google / Gemini",
                 "google_vertex_ai" to "Google / Vertex AI",
-                "xai_grok" to "xAI / Grok",
+                "xai_grok_responses" to "xAI Grok / Responses",
+                "xai_grok_chat_completions" to "xAI Grok / Chat Completions",
                 "alibaba_qwen_text" to "Alibaba / Qwen Text",
                 "alibaba_qwen_multimodal" to "Alibaba / Qwen Multimodal",
-                "moonshot_ai_kimi" to "Moonshot AI / Kimi",
+                "moonshot_kimi_responses" to "Moonshot Kimi / Responses",
+                "moonshot_kimi_chat_completions" to "Moonshot Kimi / Chat Completions",
                 "z_ai_glm" to "Z.AI / GLM",
-                "deepseek_deepseek" to "DeepSeek / DeepSeek",
+                "deepseek_responses" to "DeepSeek / Responses",
+                "deepseek_chat_completions" to "DeepSeek / Chat Completions",
                 "volcengine_ark_chat_completions" to "Volcengine / Ark / Chat Completions",
                 "volcengine_ark_responses" to "Volcengine / Ark / Responses",
                 "baidu_qianfan" to "Baidu / Qianfan",
@@ -36,6 +39,9 @@ class PromptConfigTest {
             assertEquals(provider, PostProcessingProvider.fromId(provider.id))
         }
         assertNull(PostProcessingProvider.fromId("OPENAI_COMPATIBLE"))
+        assertNull(PostProcessingProvider.fromId("xai_grok"))
+        assertNull(PostProcessingProvider.fromId("moonshot_ai_kimi"))
+        assertNull(PostProcessingProvider.fromId("deepseek_deepseek"))
     }
 
     @Test fun defaultAndInheritedPromptsUseTheEntireCurrentMainApi() {

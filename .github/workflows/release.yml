@@ -31,14 +31,17 @@ jobs:
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
+          check-latest: true
           cache: gradle
+      - name: Block compromised eMudhra certificates in the build JDK
+        run: python3 scripts/harden-jdk-certificates.py "$JAVA_HOME"
       - uses: gradle/actions/wrapper-validation@v5
       - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
       - run: yes | sdkmanager --licenses
-      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;$ANDROID_NDK_VERSION"
+      - run: sdkmanager "platforms;android-35" "build-tools;36.0.0" "ndk;$ANDROID_NDK_VERSION"
       - run: echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
       - uses: actions/cache@v5
         with:
@@ -95,7 +98,7 @@ jobs:
           sha256sum Dictate-latest-arm64-v8a.apk > Dictate-latest-arm64-v8a.apk.sha256
       - name: Verify APK signature
         run: |
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs dist/Dictate-latest-arm64-v8a.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs dist/Dictate-latest-arm64-v8a.apk
       - name: Publish moving Latest release
         env:
           GH_TOKEN: ${{ github.token }}

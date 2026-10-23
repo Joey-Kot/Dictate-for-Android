@@ -32,10 +32,12 @@ class PostProcessingClientTest {
                     PostProcessingProvider.GOOGLE -> "/v1beta/models/independent-model:generateContent" to "x-goog-api-key: prompt-secret"
                     PostProcessingProvider.VERTEX_AI -> "/v1/projects/project/locations/global/publishers/google/models/independent-model:generateContent" to "Authorization: Bearer prompt-secret"
                     PostProcessingProvider.ANTHROPIC -> "/v1/messages" to "x-api-key: prompt-secret"
-                    PostProcessingProvider.OPENAI_RESPONSES -> "/v1/responses" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.OPENAI_RESPONSES, PostProcessingProvider.XAI_RESPONSES,
+                    PostProcessingProvider.KIMI_RESPONSES -> "/v1/responses" to "Authorization: Bearer prompt-secret"
                     PostProcessingProvider.AZURE_OPENAI_RESPONSES -> "/openai/v1/responses" to "api-key: prompt-secret"
                     PostProcessingProvider.AZURE_OPENAI_CHAT_COMPLETIONS -> "/openai/v1/chat/completions" to "api-key: prompt-secret"
-                    PostProcessingProvider.DEEPSEEK -> "/chat/completions" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.DEEPSEEK_RESPONSES -> "/responses" to "Authorization: Bearer prompt-secret"
+                    PostProcessingProvider.DEEPSEEK_CHAT_COMPLETIONS -> "/chat/completions" to "Authorization: Bearer prompt-secret"
                     PostProcessingProvider.QWEN_TEXT -> "/api/v1/services/aigc/text-generation/generation" to "Authorization: Bearer prompt-secret"
                     PostProcessingProvider.QWEN_MULTIMODAL -> "/api/v1/services/aigc/multimodal-generation/generation" to "Authorization: Bearer prompt-secret"
                     PostProcessingProvider.GLM -> "/api/paas/v4/chat/completions" to "Authorization: Bearer prompt-secret"
@@ -51,14 +53,18 @@ class PostProcessingClientTest {
                     PostProcessingProvider.GOOGLE, PostProcessingProvider.VERTEX_AI -> "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"result\"}]},\"finishReason\":\"STOP\"}]}\n\n"
                     PostProcessingProvider.ANTHROPIC -> "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"result\"}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
                     PostProcessingProvider.OPENAI_RESPONSES, PostProcessingProvider.AZURE_OPENAI_RESPONSES,
-                    PostProcessingProvider.VOLCENGINE_ARK_RESPONSES -> "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output_text\":\"result\"}}\n\n"
+                    PostProcessingProvider.XAI_RESPONSES, PostProcessingProvider.KIMI_RESPONSES,
+                    PostProcessingProvider.DEEPSEEK_RESPONSES,
+                    PostProcessingProvider.VOLCENGINE_ARK_RESPONSES -> "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"result\"}]}]}}\n\n"
                     PostProcessingProvider.QWEN_TEXT, PostProcessingProvider.QWEN_MULTIMODAL -> "data: {\"output\":{\"choices\":[{\"message\":{\"content\":\"result\"},\"finish_reason\":\"stop\"}]}}\n\n"
                     else -> "data: {\"choices\":[{\"delta\":{\"content\":\"result\"}}]}\n\ndata: [DONE]\n\n"
                 } else when (provider) {
                     PostProcessingProvider.GOOGLE, PostProcessingProvider.VERTEX_AI -> """{"candidates":[{"content":{"parts":[{"text":"result"}]},"finishReason":"STOP"}]}"""
                     PostProcessingProvider.ANTHROPIC -> """{"content":[{"type":"text","text":"result"}]}"""
                     PostProcessingProvider.OPENAI_RESPONSES, PostProcessingProvider.AZURE_OPENAI_RESPONSES,
-                    PostProcessingProvider.VOLCENGINE_ARK_RESPONSES -> """{"status":"completed","output_text":"result"}"""
+                    PostProcessingProvider.XAI_RESPONSES, PostProcessingProvider.KIMI_RESPONSES,
+                    PostProcessingProvider.DEEPSEEK_RESPONSES,
+                    PostProcessingProvider.VOLCENGINE_ARK_RESPONSES -> """{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"result"}]}]}"""
                     PostProcessingProvider.QWEN_TEXT, PostProcessingProvider.QWEN_MULTIMODAL -> """{"output":{"choices":[{"message":{"content":"result"},"finish_reason":"stop"}]}}"""
                     else -> """{"choices":[{"message":{"content":"result"}}]}"""
                 }

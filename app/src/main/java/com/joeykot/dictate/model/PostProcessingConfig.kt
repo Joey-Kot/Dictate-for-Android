@@ -57,7 +57,16 @@ enum class PostProcessingProvider(
         "Google / Vertex AI",
         PostProcessingWireFormat.GEMINI,
     ),
-    XAI("xai_grok", "xAI / Grok", PostProcessingWireFormat.OPENAI_CHAT),
+    XAI_RESPONSES(
+        "xai_grok_responses",
+        "xAI Grok / Responses",
+        PostProcessingWireFormat.OPENAI_RESPONSES,
+    ),
+    XAI_CHAT_COMPLETIONS(
+        "xai_grok_chat_completions",
+        "xAI Grok / Chat Completions",
+        PostProcessingWireFormat.OPENAI_CHAT,
+    ),
     QWEN_TEXT(
         "alibaba_qwen_text",
         "Alibaba / Qwen Text",
@@ -68,11 +77,25 @@ enum class PostProcessingProvider(
         "Alibaba / Qwen Multimodal",
         PostProcessingWireFormat.DASHSCOPE_MULTIMODAL,
     ),
-    KIMI("moonshot_ai_kimi", "Moonshot AI / Kimi", PostProcessingWireFormat.OPENAI_CHAT),
+    KIMI_RESPONSES(
+        "moonshot_kimi_responses",
+        "Moonshot Kimi / Responses",
+        PostProcessingWireFormat.OPENAI_RESPONSES,
+    ),
+    KIMI_CHAT_COMPLETIONS(
+        "moonshot_kimi_chat_completions",
+        "Moonshot Kimi / Chat Completions",
+        PostProcessingWireFormat.OPENAI_CHAT,
+    ),
     GLM("z_ai_glm", "Z.AI / GLM", PostProcessingWireFormat.OPENAI_CHAT),
-    DEEPSEEK(
-        "deepseek_deepseek",
-        "DeepSeek / DeepSeek",
+    DEEPSEEK_RESPONSES(
+        "deepseek_responses",
+        "DeepSeek / Responses",
+        PostProcessingWireFormat.OPENAI_RESPONSES,
+    ),
+    DEEPSEEK_CHAT_COMPLETIONS(
+        "deepseek_chat_completions",
+        "DeepSeek / Chat Completions",
         PostProcessingWireFormat.OPENAI_CHAT,
     ),
     VOLCENGINE_ARK_CHAT_COMPLETIONS(

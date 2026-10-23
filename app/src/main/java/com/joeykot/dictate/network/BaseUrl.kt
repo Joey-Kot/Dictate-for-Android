@@ -48,7 +48,8 @@ object BaseUrl {
             }
             if (path.isEmpty()) {
                 path = when (provider) {
-                    PostProcessingProvider.DEEPSEEK -> ""
+                    PostProcessingProvider.DEEPSEEK_RESPONSES,
+                    PostProcessingProvider.DEEPSEEK_CHAT_COMPLETIONS -> ""
                     PostProcessingProvider.QWEN_TEXT,
                     PostProcessingProvider.QWEN_MULTIMODAL -> "/api/v1"
                     PostProcessingProvider.GLM -> "/api/paas/v4"

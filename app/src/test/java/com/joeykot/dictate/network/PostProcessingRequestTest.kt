@@ -18,10 +18,10 @@ class PostProcessingRequestTest {
     fun chatProvidersUseSystemInstructionAndSeparateUserInput() {
         listOf(
             PostProcessingProvider.OPENAI_COMPATIBLE, PostProcessingProvider.OPENAI_COMPLETIONS,
-            PostProcessingProvider.DEEPSEEK, PostProcessingProvider.GLM,
-            PostProcessingProvider.KIMI, PostProcessingProvider.VOLCENGINE_ARK_CHAT_COMPLETIONS,
+            PostProcessingProvider.DEEPSEEK_CHAT_COMPLETIONS, PostProcessingProvider.GLM,
+            PostProcessingProvider.KIMI_CHAT_COMPLETIONS, PostProcessingProvider.VOLCENGINE_ARK_CHAT_COMPLETIONS,
             PostProcessingProvider.BAIDU_QIANFAN, PostProcessingProvider.TENCENT_TOKENHUB,
-            PostProcessingProvider.MISTRAL, PostProcessingProvider.XAI,
+            PostProcessingProvider.MISTRAL, PostProcessingProvider.XAI_CHAT_COMPLETIONS,
             PostProcessingProvider.GROQ, PostProcessingProvider.COHERE,
         ).forEach { provider ->
             val request = request(provider)
@@ -39,6 +39,9 @@ class PostProcessingRequestTest {
     fun responsesUsesInstructionsAndAzureChatUsesApiKey() {
         listOf(
             PostProcessingProvider.OPENAI_RESPONSES to "https://example.test/v1/responses",
+            PostProcessingProvider.XAI_RESPONSES to "https://example.test/v1/responses",
+            PostProcessingProvider.KIMI_RESPONSES to "https://example.test/v1/responses",
+            PostProcessingProvider.DEEPSEEK_RESPONSES to "https://example.test/responses",
             PostProcessingProvider.AZURE_OPENAI_RESPONSES to "https://example.test/openai/v1/responses",
             PostProcessingProvider.VOLCENGINE_ARK_RESPONSES to "https://example.test/api/v3/responses",
         ).forEach { (provider, endpoint) ->
@@ -46,8 +49,13 @@ class PostProcessingRequestTest {
             assertEquals(endpoint, responses.endpoint)
             assertEquals(prompt.prompt, responses.body.getString("instructions"))
             assertEquals("user", responses.body.getJSONArray("input").getJSONObject(0).getString("role"))
+            assertEquals("selected text", responses.body.getJSONArray("input").getJSONObject(0).getString("content"))
+            assertFalse(responses.body.has("messages"))
         }
         assertEquals("Bearer key", request(PostProcessingProvider.OPENAI_RESPONSES).headers["Authorization"])
+        assertEquals("Bearer key", request(PostProcessingProvider.XAI_RESPONSES).headers["Authorization"])
+        assertEquals("Bearer key", request(PostProcessingProvider.KIMI_RESPONSES).headers["Authorization"])
+        assertEquals("Bearer key", request(PostProcessingProvider.DEEPSEEK_RESPONSES).headers["Authorization"])
         assertEquals("key", request(PostProcessingProvider.AZURE_OPENAI_RESPONSES).headers["api-key"])
         val azureChat = request(PostProcessingProvider.AZURE_OPENAI_CHAT_COMPLETIONS)
         assertEquals("https://example.test/openai/v1/chat/completions", azureChat.endpoint)
@@ -147,10 +155,20 @@ class PostProcessingRequestTest {
 
     @Test
     fun nativeAndCompatibleResponsesReturnOnlyVisibleText() {
-        assertEquals("answer", PostProcessingRequest.parseText(PostProcessingProvider.OPENAI_COMPATIBLE,
-            """{"choices":[{"message":{"content":"answer","reasoning_content":"hidden"}}]}"""))
-        assertEquals("answer", PostProcessingRequest.parseText(PostProcessingProvider.OPENAI_RESPONSES,
-            """{"output":[{"type":"reasoning","summary":[]},{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}"""))
+        listOf(
+            PostProcessingProvider.OPENAI_COMPATIBLE, PostProcessingProvider.XAI_CHAT_COMPLETIONS,
+            PostProcessingProvider.KIMI_CHAT_COMPLETIONS, PostProcessingProvider.DEEPSEEK_CHAT_COMPLETIONS,
+        ).forEach { provider ->
+            assertEquals("answer", PostProcessingRequest.parseText(provider,
+                """{"choices":[{"message":{"content":"answer","reasoning_content":"hidden"},"finish_reason":"stop"}]}"""))
+        }
+        listOf(
+            PostProcessingProvider.OPENAI_RESPONSES, PostProcessingProvider.XAI_RESPONSES,
+            PostProcessingProvider.KIMI_RESPONSES, PostProcessingProvider.DEEPSEEK_RESPONSES,
+        ).forEach { provider ->
+            assertEquals("answer", PostProcessingRequest.parseText(provider,
+                """{"status":"completed","output":[{"type":"reasoning","content":[{"type":"reasoning_text","text":"hidden"}],"summary":[{"type":"summary_text","text":"hidden"}]},{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}"""))
+        }
         assertEquals("answer", PostProcessingRequest.parseText(PostProcessingProvider.AZURE_OPENAI_RESPONSES,
             """{"status":"completed","output_text":"answer"}"""))
         assertEquals("answer", PostProcessingRequest.parseText(PostProcessingProvider.ANTHROPIC,
@@ -166,6 +184,24 @@ class PostProcessingRequestTest {
     }
 
     @Test
+    fun kimiResponsesPreservesSearchOptionsAndReturnsOnlyTheFinalAnswer() {
+        val request = PostProcessingRequest.build(
+            PostProcessingConfig(PostProcessingProvider.KIMI_RESPONSES, "https://api.moonshot.ai", "kimi-k3"),
+            "key",
+            prompt.copy(additionalJson = """{"tools":[{"type":"web_search"}],"reasoning":{"effort":"low"}}"""),
+            "selected text",
+        )
+        assertEquals("https://api.moonshot.ai/v1/responses", request.endpoint)
+        assertEquals("kimi-k3", request.body.getString("model"))
+        assertEquals(prompt.prompt, request.body.getString("instructions"))
+        assertEquals("selected text", request.body.getJSONArray("input").getJSONObject(0).getString("content"))
+        assertEquals("web_search", request.body.getJSONArray("tools").getJSONObject(0).getString("type"))
+        assertEquals("low", request.body.getJSONObject("reasoning").getString("effort"))
+        assertEquals("answer", PostProcessingRequest.parseText(PostProcessingProvider.KIMI_RESPONSES,
+            """{"status":"completed","output":[{"type":"web_search_call","status":"completed","action":{"type":"search","query":"news"}},{"type":"reasoning","summary":[{"type":"summary_text","text":"hidden"}]},{"type":"message","content":[{"type":"output_text","text":"answer"}]}]}"""))
+    }
+
+    @Test
     fun missingTextAndMalformedResponseAreFailures() {
         listOf("bad JSON", "{}", """{"choices":[{"message":{"content":null}}]}""").forEach {
             assertThrows(PostProcessingRequest.InvalidResponseException::class.java) {
@@ -176,8 +212,19 @@ class PostProcessingRequestTest {
 
     @Test
     fun incompleteStatusesAndFinishReasonsAreRejected() {
-        assertThrows(PostProcessingRequest.InvalidResponseException::class.java) {
-            PostProcessingRequest.parseText(PostProcessingProvider.AZURE_OPENAI_RESPONSES, """{"status":"incomplete","output_text":"partial"}""")
+        listOf(
+            PostProcessingProvider.AZURE_OPENAI_RESPONSES, PostProcessingProvider.XAI_RESPONSES,
+            PostProcessingProvider.KIMI_RESPONSES, PostProcessingProvider.DEEPSEEK_RESPONSES,
+        ).forEach { provider ->
+            assertThrows(PostProcessingRequest.InvalidResponseException::class.java) {
+                PostProcessingRequest.parseText(provider, """{"status":"incomplete","output_text":"partial"}""")
+            }
+        }
+        listOf("length", "tool_calls").forEach { reason ->
+            assertThrows(PostProcessingRequest.InvalidResponseException::class.java) {
+                PostProcessingRequest.parseText(PostProcessingProvider.KIMI_CHAT_COMPLETIONS,
+                    """{"choices":[{"message":{"content":"partial"},"finish_reason":"$reason"}]}""")
+            }
         }
         assertThrows(PostProcessingRequest.InvalidResponseException::class.java) {
             PostProcessingRequest.parseText(PostProcessingProvider.GOOGLE,
@@ -217,6 +264,28 @@ class PostProcessingRequestTest {
 
     @Test
     fun endpointsPreserveGatewayPathsAndAcceptCompleteEndpoints() {
+        listOf(
+            PostProcessingProvider.DEEPSEEK_RESPONSES to "/responses",
+            PostProcessingProvider.DEEPSEEK_CHAT_COMPLETIONS to "/chat/completions",
+        ).forEach { (provider, suffix) ->
+            listOf("", "/v1", "/proxy/v1").forEach { prefix ->
+                val base = "https://api.deepseek.com$prefix"
+                listOf(base, "$base/", "$base$suffix").forEach { baseUrl ->
+                    assertEquals("$base$suffix", BaseUrl.postProcessingEndpoint(baseUrl, provider, "custom-model"))
+                }
+            }
+        }
+        listOf(
+            Triple(PostProcessingProvider.XAI_RESPONSES, "https://api.x.ai", "/responses"),
+            Triple(PostProcessingProvider.XAI_CHAT_COMPLETIONS, "https://api.x.ai", "/chat/completions"),
+            Triple(PostProcessingProvider.KIMI_RESPONSES, "https://api.moonshot.ai", "/responses"),
+            Triple(PostProcessingProvider.KIMI_CHAT_COMPLETIONS, "https://api.moonshot.ai", "/chat/completions"),
+        ).forEach { (provider, origin, suffix) ->
+            listOf(origin, "$origin/v1/", "$origin/v1$suffix").forEach { baseUrl ->
+                assertEquals("$origin/v1$suffix", BaseUrl.postProcessingEndpoint(baseUrl, provider, "m"))
+            }
+            assertEquals("https://example.test/proxy/v1$suffix", BaseUrl.postProcessingEndpoint("https://example.test/proxy/v1/", provider, "m"))
+        }
         assertEquals("https://example.test/proxy/v1/responses", BaseUrl.postProcessingEndpoint("https://example.test/proxy/v1/", PostProcessingProvider.OPENAI_RESPONSES, "m"))
         assertEquals("https://example.test/v1/messages", BaseUrl.postProcessingEndpoint("https://example.test/v1/messages", PostProcessingProvider.ANTHROPIC, "m"))
         assertEquals("https://example.test/api/paas/v4/chat/completions", BaseUrl.postProcessingEndpoint("https://example.test", PostProcessingProvider.GLM, "m"))
