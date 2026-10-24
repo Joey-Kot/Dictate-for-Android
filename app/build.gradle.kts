@@ -104,8 +104,6 @@ val buildDebugFfmpeg = tasks.register<Exec>("buildDebugFfmpeg") {
     group = "build"
     description = "Builds the arm64 FFmpeg CLI required by Debug APKs."
     inputs.file(ffmpegBuildScript)
-    inputs.file(rootProject.layout.projectDirectory.file("scripts/apply-ffmpeg-security-patch.sh"))
-    inputs.file(rootProject.layout.projectDirectory.file("scripts/patches/ffmpeg-8.1.3-cve-2026-107678.patch"))
     outputs.file(debugFfmpegBinary)
     workingDir(rootProject.projectDir)
     executable = "bash"

@@ -4,7 +4,7 @@ Dictate is licensed under `GPL-3.0-or-later`. Runtime, build-only, and test-only
 
 | Component | Exact version | Purpose | Upstream | License | License text | Modifications and build |
 |---|---:|---|---|---|---|---|
-| FFmpeg | `n8.1.3` | Embedded arm64 CLI for audio normalization | <https://ffmpeg.org/> | `GPL-3.0-or-later` for this `--enable-gpl --enable-version3` build | [`GPL-3.0.txt`](THIRD_PARTY_LICENSES/GPL-3.0.txt) | CVE-2026-107678 backport from [upstream PR 24593](https://code.ffmpeg.org/FFmpeg/FFmpeg/pulls/24593); commit IDs are in `scripts/patches/ffmpeg-8.1.3-cve-2026-107678.patch`. Minimal static Android CLI built by `scripts/build-android-ffmpeg.sh`, stripped and renamed `libffmpeg.so`. |
+| FFmpeg | `n9.0.2` | Embedded arm64 CLI for audio normalization | <https://ffmpeg.org/> | `GPL-3.0-or-later` for this `--enable-gpl --enable-version3` build | [`GPL-3.0.txt`](THIRD_PARTY_LICENSES/GPL-3.0.txt) | No patches. Minimal static Android CLI built by `scripts/build-android-ffmpeg.sh`, stripped and renamed `libffmpeg.so`; only the raw `pcm_s16le` input demuxer is enabled. |
 | Opus | `1.5.2` | Opus encoder statically linked into FFmpeg | <https://opus-codec.org/> | 3-clause BSD-style license and patent notices | [`Opus-BSD-3-Clause.txt`](THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt) | No patches; position-independent static build. |
 | LAME | `3.100` | MP3 encoder statically linked into FFmpeg | <https://lame.sourceforge.io/> | `LGPL-2.0-or-later` | [`LGPL-2.0.txt`](THIRD_PARTY_LICENSES/LGPL-2.0.txt) | No patches; frontend and decoder disabled, static encoder linked. |
 | libogg | `1.3.5` | Ogg support for libvorbis | <https://xiph.org/ogg/> | BSD-3-Clause | [`Ogg-BSD-3-Clause.txt`](THIRD_PARTY_LICENSES/Ogg-BSD-3-Clause.txt) | Unmodified, static PIC build. |
@@ -25,7 +25,7 @@ Dictate is licensed under `GPL-3.0-or-later`. Runtime, build-only, and test-only
 The source build verifies:
 
 ```text
-FFmpeg 8.1.3  7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3
+FFmpeg 9.0.2 (tar.gz)  84960df915059e8754fef2cd7c9afeb614062b1b5458ec471eecee619ee04e98
 Opus 1.5.2  65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1
 LAME 3.100  ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
 libogg 1.3.5  c4d91be36fc8e54deae7575241e03f4211eb102afb3fc0775fbbc1b740016705

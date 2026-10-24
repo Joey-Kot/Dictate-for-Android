@@ -42,10 +42,10 @@ LAME_ARCHIVE="lame-$LAME_VERSION.tar.gz"
 LAME_URL="https://downloads.sourceforge.net/project/lame/lame/$LAME_VERSION/$LAME_ARCHIVE"
 LAME_SHA256="ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
 
-FFMPEG_VERSION=8.1.3
-FFMPEG_ARCHIVE="ffmpeg-$FFMPEG_VERSION.tar.xz"
-FFMPEG_URL="https://ffmpeg.org/releases/$FFMPEG_ARCHIVE"
-FFMPEG_SHA256="7138d28c96d9d3e3af4ee3d8cad72741f8ffb40da90c1112235dea3ecd3178a3"
+FFMPEG_VERSION=9.0.2
+FFMPEG_ARCHIVE="ffmpeg-$FFMPEG_VERSION.tar.gz"
+FFMPEG_URL="https://www.ffmpeg.org/releases/$FFMPEG_ARCHIVE"
+FFMPEG_SHA256="84960df915059e8754fef2cd7c9afeb614062b1b5458ec471eecee619ee04e98"
 
 mkdir -p "$DOWNLOAD_DIR" "$SOURCE_DIR" "$BUILD_DIR" "$PREFIX_DIR" "$OUTPUT_DIR"
 
@@ -151,7 +151,6 @@ filters=aformat,anull,aresample,pan
 download_and_verify "$FFMPEG_URL" "$DOWNLOAD_DIR/$FFMPEG_ARCHIVE" "$FFMPEG_SHA256"
 extract_once "$DOWNLOAD_DIR/$FFMPEG_ARCHIVE" "$SOURCE_DIR/ffmpeg-$FFMPEG_VERSION"
 FFMPEG_SOURCE="$SOURCE_DIR/ffmpeg-$FFMPEG_VERSION"
-"$ROOT_DIR/scripts/apply-ffmpeg-security-patch.sh" "$FFMPEG_SOURCE"
 
 mkdir -p "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
 pushd "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
@@ -216,6 +215,11 @@ require_ffmpeg_component() {
 for symbol in CONFIG_PCM_S16LE_DEMUXER CONFIG_PCM_S16LE_DECODER CONFIG_FILE_PROTOCOL; do
     require_ffmpeg_component "$symbol"
 done
+# Input is always the app's raw PCM recording. Keep container parsers out of the APK.
+if grep -E '^#define CONFIG_.*_DEMUXER 1$' config_components.h | grep -vx '#define CONFIG_PCM_S16LE_DEMUXER 1'; then
+    echo "Unexpected input demuxer: only pcm_s16le may be enabled in the Android build." >&2
+    exit 1
+fi
 check_components() {
     local kind="$1" component
     local -a components

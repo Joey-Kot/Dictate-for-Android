@@ -146,7 +146,7 @@ sequenceDiagram
         J->>V: POST one transcription request per segment
         V-->>J: Segment text
       end
-      Note over J,V: Wait for the batch; omit blank successes, preserve nonblank text, and retain actual failure placeholders in source order
+      Note over J,V: Wait for the batch - omit blank successes, preserve nonblank text, and retain actual failure placeholders in source order
     else Segmented upload disabled
       J->>F: Transcode with current settings
       J->>V: POST OpenAI-compatible transcription request
@@ -167,7 +167,7 @@ sequenceDiagram
         Note over J,V: Poll/result may retry, but submit is never retried
         V-->>J: Segment text
       end
-      Note over J,V: Wait for the batch; omit blank successes, preserve nonblank text, and retain actual failure placeholders in source order
+      Note over J,V: Wait for the batch - omit blank successes, preserve nonblank text, and retain actual failure placeholders in source order
     else Segmented upload disabled
       J->>F: Transcode with current settings
       opt Workflow requires a remote audio reference
@@ -191,7 +191,7 @@ sequenceDiagram
       J->>V: Replay complete local PCM from zero
     end
     V-->>J: Final response text
-    Note over J,V: Empty pause sessions are successful children; aggregate only after recording stops and every session is terminal
+    Note over J,V: Empty pause sessions are successful children - aggregate only after recording stops and every session is terminal
   else Text selected and saved prompts exist
     U->>O: Hold idle button
     O->>A: Read current selected text
@@ -203,10 +203,10 @@ sequenceDiagram
     P-->>J: Final response text
   end
 
-  Note over J,V: Segmented batches retain every PCM frame; a blank child does not finish the parent job, and cancellation delivers no text
+  Note over J,V: Segmented batches retain every PCM frame - a blank child does not finish the parent job, and cancellation delivers no text
 
   alt Connection test
-    J-->>U: Return ConnectionTestResult; completed empty ASR is successful
+    J-->>U: Return ConnectionTestResult - completed empty ASR is successful
     Note over J,C: No editor or clipboard writes
   else Complete ASR result or aggregate is blank
     J->>J: completeNoSpeech and normal cleanup
@@ -406,9 +406,9 @@ Release builds enable R8 code shrinking, optimization, obfuscation, and resource
 
 The build uses AGP 9.4.1, Gradle 9.8.1, and AGP built-in Kotlin overridden to 2.4.21. Buildscript-only constraints upgrade Bouncy Castle to 1.85, Commons Lang to 3.18.0, jose4j to 0.9.6, and JDOM to 2.0.6.1; these overrides do not add APK runtime dependencies. Before starting Gradle, `scripts/harden-jdk-certificates.py` applies the pinned [eMudhra certificate blocklist](https://docs.azul.com/core/emudhra-workaround) to the build JDK while preserving existing blocks; restart any existing Java/Gradle processes afterward. CI applies it immediately after setting up Java.
 
-The native build requires Linux, `make`, `pkg-config`, `curl`, `tar`, `patch`, and XZ support. The script verifies the FFmpeg `8.1.3`, Opus `1.5.2`, LAME `3.100`, libogg `1.3.5`, libvorbis `1.3.7`, OpenCORE AMR `0.1.6`, VisualOn AMR-WB `0.1.3`, and Speex `1.2.1` source archives by SHA-256. It applies `scripts/patches/ffmpeg-8.1.3-cve-2026-107678.patch` (upstream PR 24593) before compiling. It builds only AArch64, checks every required demuxer/encoder/muxer/filter, and verifies the resulting Android PIE executable's 16 KiB load alignment. This FFmpeg build uses `--enable-gpl --enable-version3`; dependency licenses and checksums are recorded in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+The native build requires Linux, `make`, `pkg-config`, `curl`, `tar`, gzip, and XZ support. The script verifies the FFmpeg `9.0.2`, Opus `1.5.2`, LAME `3.100`, libogg `1.3.5`, libvorbis `1.3.7`, OpenCORE AMR `0.1.6`, VisualOn AMR-WB `0.1.3`, and Speex `1.2.1` source archives by SHA-256. FFmpeg uses the unmodified `https://www.ffmpeg.org/releases/ffmpeg-9.0.2.tar.gz` release archive. It builds only AArch64, checks every required encoder/muxer/filter, rejects input demuxers other than `pcm_s16le`, and verifies the resulting Android PIE executable's 16 KiB load alignment. This FFmpeg build uses `--enable-gpl --enable-version3`; dependency licenses and checksums are recorded in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
-After the native build, audio integration tests can run the packaged Android binary under QEMU with the Android 8 runtime. They require `qemu-user` (`qemu-aarch64`), `e2fsprogs` (`debugfs`), Python 3, and a host C compiler. The script extracts the runtime without mounting the SDK image and builds an independent FFmpeg 8.1.3 decoder/probe from the downloaded sources.
+After the native build, audio integration tests can run the packaged Android binary under QEMU with the Android 8 runtime. They require `qemu-user` (`qemu-aarch64`), `e2fsprogs` (`debugfs`), Python 3, and a host C compiler. The script extracts the runtime without mounting the SDK image and builds an independent FFmpeg 9.0.2 decoder/probe from the downloaded sources. Its container demuxers validate generated test output and are not packaged in the APK.
 
 ```bash
 "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'system-images;android-26;default;arm64-v8a'

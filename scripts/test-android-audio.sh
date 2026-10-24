@@ -5,6 +5,7 @@
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_ROOT="${DICTATE_NATIVE_BUILD_DIR:-$ROOT_DIR/native-build-tmp}"
+FFMPEG_VERSION=9.0.2
 SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Set ANDROID_HOME or ANDROID_SDK_ROOT}}"
 SYSTEM_IMAGE="$SDK_ROOT/system-images/android-26/default/arm64-v8a/system.img"
 RUNTIME_DIR="$BUILD_ROOT/android-runtime"
@@ -52,16 +53,16 @@ export DICTATE_FFMPEG_RUNNER="$ROOT_DIR/scripts/run-android-audio.sh"
 # FFmpeg versions cannot inspect some PCM-in-MP4 files even when encoding is valid.
 if [[ -z "${DICTATE_FFPROBE:-}" || -z "${DICTATE_FFMPEG_DECODER:-}" ]]; then
     PREFIX_DIR="$BUILD_ROOT/host-verifier/prefix"
-    mkdir -p "$BUILD_ROOT/host-verifier/speex" "$BUILD_ROOT/host-verifier/ffmpeg-8.1.3"
+    mkdir -p "$BUILD_ROOT/host-verifier/speex" "$BUILD_ROOT/host-verifier/ffmpeg-$FFMPEG_VERSION"
     pushd "$BUILD_ROOT/host-verifier/speex"
     "$BUILD_ROOT/sources/speex-1.2.1/configure" --prefix="$PREFIX_DIR" \
         --disable-shared --enable-static --disable-binaries
     make -j"${JOBS:-4}"
     make install
     popd
-    pushd "$BUILD_ROOT/host-verifier/ffmpeg-8.1.3"
+    pushd "$BUILD_ROOT/host-verifier/ffmpeg-$FFMPEG_VERSION"
     PKG_CONFIG_PATH="$PREFIX_DIR/lib/pkgconfig" PKG_CONFIG_LIBDIR="$PREFIX_DIR/lib/pkgconfig" \
-    "$BUILD_ROOT/sources/ffmpeg-8.1.3/configure" \
+    "$BUILD_ROOT/sources/ffmpeg-$FFMPEG_VERSION/configure" \
         --disable-doc --disable-debug --disable-autodetect --disable-everything --disable-x86asm \
         --disable-avdevice --disable-swscale --disable-network --enable-ffmpeg --enable-ffprobe \
         --enable-libspeex --pkg-config-flags=--static \
@@ -73,8 +74,8 @@ if [[ -z "${DICTATE_FFPROBE:-}" || -z "${DICTATE_FFMPEG_DECODER:-}" ]]; then
         --enable-encoder=pcm_s16le --enable-muxer=pcm_s16le
     make -j"${JOBS:-4}" ffmpeg ffprobe
     popd
-    export DICTATE_FFPROBE="$BUILD_ROOT/host-verifier/ffmpeg-8.1.3/ffprobe"
-    export DICTATE_FFMPEG_DECODER="$BUILD_ROOT/host-verifier/ffmpeg-8.1.3/ffmpeg"
+    export DICTATE_FFPROBE="$BUILD_ROOT/host-verifier/ffmpeg-$FFMPEG_VERSION/ffprobe"
+    export DICTATE_FFMPEG_DECODER="$BUILD_ROOT/host-verifier/ffmpeg-$FFMPEG_VERSION/ffmpeg"
 fi
 cd "$ROOT_DIR"
 ./gradlew --no-daemon --no-configuration-cache :app:testDebugUnitTest \
