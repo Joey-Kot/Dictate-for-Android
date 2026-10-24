@@ -6,6 +6,8 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.app.NotificationManager
 import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -334,11 +336,19 @@ class MainActivity : Activity() {
             addView(Button(this@MainActivity).apply {
                 text = getString(R.string.main_diagnostics_details)
                 setOnClickListener {
-                    diagnosticsText.text = app.diagnostics.snapshot().ifBlank { getString(R.string.main_no_diagnostics) }
-                    diagnosticsText.visibility = if (diagnosticsText.visibility == View.VISIBLE) {
-                        View.GONE
-                    } else {
-                        View.VISIBLE
+                    if (diagnosticsText.visibility == View.VISIBLE) {
+                        diagnosticsText.visibility = View.GONE
+                        return@setOnClickListener
+                    }
+                    val logs = app.diagnostics.snapshot()
+                    diagnosticsText.text = logs.ifBlank { getString(R.string.main_no_diagnostics) }
+                    diagnosticsText.visibility = View.VISIBLE
+                    if (logs.isNotBlank()) {
+                        val copied = runCatching {
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.main_diagnostics_details), logs))
+                        }.isSuccess
+                        toast(getString(if (copied) R.string.main_diagnostics_copied else R.string.main_diagnostics_copy_failed))
                     }
                 }
             }, weighted())

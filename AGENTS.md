@@ -368,6 +368,14 @@ A valid original recording is retained once recording finishes, and empty recogn
 
 Cancellation and late-result guards remain active. Controller callbacks must match the current job ID (and live recording instance where applicable); canceled results cannot reach delivery. Started segmented children are allowed to drain after cancellation so their remote cleanup can finish. Advanced HTTP success checks cancellation again before returning; remote objects are cleaned in `finally`, honoring successful-upload retention for empty success and forcing deletion after failure/cancellation. Cleanup failure does not replace the recognition outcome.
 
+## Network diagnostics
+
+Advanced HTTP recognition uses per-invocation `AdvancedAudioDiagnostics` and a per-call `HttpCallDiagnostics` OkHttp listener. Controller callbacks add job and segment IDs; stage, attempt, and request IDs remain scoped to one workflow, including concurrent segmented uploads. Requests, streams, and polling log status/timing, DNS/connect/TLS/upload/download events, pooled connections, retry decisions, typed failure causes, and a terminal workflow outcome before any failure-placeholder delivery. HTTP completion and successful recognition are distinct events. The callback must never change request/retry/cancellation behavior. Do not log rendered URLs, headers, request/response contents, transcript text, or raw exception messages. Exception class names used for diagnosis are retained by R8 rules.
+
+`Diagnostics` restores retained disk entries on construction. The panel defaults to the retained 2,000-entry memory window; the disk log rotates at 512 KiB. Logging remains bounded, and clear removes both the in-memory and persisted history.
+
+Opening the Diagnostics panel copies the same nonblank snapshot to the clipboard and shows a localized success/failure message. Collapsing the panel or opening an empty log leaves the clipboard unchanged.
+
 ## Requirements
 
 - Android 8.0+ (`minSdk 26`) on an `arm64-v8a` device.

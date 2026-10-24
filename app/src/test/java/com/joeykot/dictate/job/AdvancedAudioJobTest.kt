@@ -145,6 +145,9 @@ class AdvancedAudioJobTest {
         assertEquals("POST /advanced HTTP/1.1", requestLines.single())
         assertFalse(states.contains(JobState.RETRY_WAITING))
         assertEquals(JobState.IDLE, controller.currentState().state)
+        val log = application.diagnostics.snapshot()
+        assertTrue(log, log.contains("workflow_end outcome=success status=200"))
+        assertTrue(log, log.contains("job=1 phase=request attempt=1 request=1 http_start"))
     }
 
     @Test
@@ -186,6 +189,13 @@ class AdvancedAudioJobTest {
                 listOf(200 to " first ", 200 to " \n\t", 503 to "", 200 to "second "),
             )
             assertEquals(" first [503 Service Unavailable]second ", resultText(result))
+            if (advanced) {
+                val log = application.diagnostics.snapshot()
+                assertTrue(log, log.contains("segment=2 phase=request attempt=1 request=1 response status=503"))
+                assertTrue(log, log.contains("segment=2 phase=request attempt=1 request=1 workflow_end outcome=failure status=503"))
+                assertTrue(log, log.contains("segment=2 terminal_failure action=insert_placeholder status=503"))
+                assertTrue(log, log.contains("segment=3 phase=request attempt=1 request=1 workflow_end outcome=success status=200"))
+            }
             controller.handleDoubleTap(controller.currentState().state)
         }
         assertEquals(8, requestCount.get())

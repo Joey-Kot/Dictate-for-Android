@@ -17,6 +17,8 @@
     <string name="main_import_json">Импорт JSON</string>
     <string name="main_diagnostics_details">Диагностика</string>
     <string name="main_no_diagnostics">Диагностических данных нет</string>
+    <string name="main_diagnostics_copied">Диагностика скопирована в буфер обмена</string>
+    <string name="main_diagnostics_copy_failed">Не удалось скопировать диагностику</string>
     <string name="main_clear_diagnostics">Очистить диагностику</string>
     <string name="main_diagnostics_cleared">Диагностика очищена. Настройки и последняя запись сохранены.</string>
     <string name="main_open_accessibility">Открыть настройки специальных возможностей</string>

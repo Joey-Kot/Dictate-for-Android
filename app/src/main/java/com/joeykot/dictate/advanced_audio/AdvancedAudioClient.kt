@@ -7,6 +7,7 @@ import com.joeykot.dictate.advanced_audio.extractor.ResponseExtraction
 import com.joeykot.dictate.advanced_audio.extractor.ResponseExtractionException
 import com.joeykot.dictate.advanced_audio.http.AdvancedCancellationToken
 import com.joeykot.dictate.advanced_audio.http.AdvancedHttpTransport
+import com.joeykot.dictate.advanced_audio.http.HttpDiagnosticEvent
 import com.joeykot.dictate.advanced_audio.http.HttpResponseData
 import com.joeykot.dictate.advanced_audio.http.HttpTransportException
 import com.joeykot.dictate.advanced_audio.http.OkHttpAdvancedTransport
@@ -55,6 +56,8 @@ class AdvancedAudioClient(
         val retry: RetryConfig = RetryConfig(),
         /** Contains only stable phase labels; rendered protocol data is never emitted. */
         val onPhase: ((String) -> Unit)? = null,
+        /** Safe lifecycle/transport metadata, independently of UI phase callbacks. */
+        val onDiagnostic: ((HttpDiagnosticEvent) -> Unit)? = null,
     )
 
     sealed interface Result {
@@ -82,7 +85,13 @@ class AdvancedAudioClient(
     ): Result {
         val startedAt = System.nanoTime()
         fun elapsedMillis(): Long = (System.nanoTime() - startedAt) / NANOS_PER_MILLISECOND
-        return try {
+        val trace = AdvancedAudioDiagnostics(request.onDiagnostic)
+        trace.start(retryCount(request.retry))
+        val onPhase: (String) -> Unit = { phase ->
+            trace.phase(phase)
+            request.onPhase?.invoke(phase)
+        }
+        val result = try {
             cancellation.throwIfCancelled()
             if (!request.config.enabled) throw AdvancedAudioExecutionException.Disabled
             val document = request.config.workflowJson?.takeIf { it.isNotBlank() }
@@ -143,7 +152,7 @@ class AdvancedAudioClient(
                         stages = stagesForHeaderPreflight(workflow.recognition),
                         audio = upload,
                     )
-                    request.onPhase?.invoke(PHASE_REMOTE_UPLOAD)
+                    onPhase(PHASE_REMOTE_UPLOAD)
                     published = remoteAudioPublisher.publish(
                         config = request.config.remoteAudio,
                         secrets = request.secrets,
@@ -160,7 +169,7 @@ class AdvancedAudioClient(
                 val completedRequest = try {
                     when (val recognition = workflow.recognition) {
                         is RequestRecognition -> {
-                            request.onPhase?.invoke(PHASE_REQUEST)
+                            onPhase(PHASE_REQUEST)
                             val response = executeRetryableStage(
                                 stage = recognition.request,
                                 renderer = renderer,
@@ -168,18 +177,20 @@ class AdvancedAudioClient(
                                 cancellation = cancellation,
                                 retry = request.retry,
                                 captures = ResponseCaptureCollector(),
+                                trace = trace,
                             )
                             CompletedRequest(extract(response, recognition.finalText, transcript = true), response.statusCode)
                         }
 
                         is RequestStreamRecognition -> {
-                            request.onPhase?.invoke(PHASE_STREAM)
+                            onPhase(PHASE_STREAM)
                             executeRequestStream(
                                 recognition = recognition,
                                 renderer = renderer,
                                 audio = audio,
                                 cancellation = cancellation,
                                 retry = request.retry,
+                                trace = trace,
                             )
                         }
 
@@ -189,7 +200,8 @@ class AdvancedAudioClient(
                             audio = audio,
                             cancellation = cancellation,
                             retry = request.retry,
-                            onPhase = request.onPhase,
+                            onPhase = onPhase,
+                            trace = trace,
                         )
 
                         is RealtimeSessionRecognition -> throw AdvancedAudioExecutionException.InvalidConfiguration
@@ -218,6 +230,7 @@ class AdvancedAudioClient(
         } catch (_: RemoteAudioException.Cancelled) {
             Result.Cancelled(elapsedMillis())
         } catch (error: AdvancedAudioExecutionException) {
+            trace.failure(error)
             Result.Failure(
                 message = error.message ?: GENERIC_FAILURE_MESSAGE,
                 statusCode = error.statusCode,
@@ -225,12 +238,14 @@ class AdvancedAudioClient(
                 placeholderEligible = error.isTerminalRequestFailure(),
             )
         } catch (error: RemoteAudioException) {
+            trace.failure(error)
             Result.Failure(
                 message = error.message ?: GENERIC_FAILURE_MESSAGE,
                 elapsedMillis = elapsedMillis(),
                 placeholderEligible = error.isTerminalRequestFailure(),
             )
         } catch (error: HttpTransportException) {
+            trace.failure(error)
             Result.Failure(
                 message = safeTransportMessage(error),
                 elapsedMillis = elapsedMillis(),
@@ -239,12 +254,15 @@ class AdvancedAudioClient(
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             Result.Cancelled(elapsedMillis())
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             // Third-party transports and JSON parsers can include rendered URLs
             // or response values in their diagnostics. Do not leak those out of
             // the advanced workflow boundary.
+            trace.failure(error)
             Result.Failure(GENERIC_FAILURE_MESSAGE, null, elapsedMillis())
         }
+        trace.complete(result)
+        return result
     }
 
     private fun executeAsyncPoll(
@@ -254,11 +272,12 @@ class AdvancedAudioClient(
         cancellation: AdvancedCancellationToken,
         retry: RetryConfig,
         onPhase: ((String) -> Unit)?,
+        trace: AdvancedAudioDiagnostics,
     ): CompletedRequest {
         val captures = ResponseCaptureCollector()
         recognition.prepare?.let { prepare ->
             onPhase?.invoke(PHASE_PREPARE)
-            executeStage(prepare, renderer, audio, cancellation, captures, captureResponse = true, allowNoSpeech = false)
+            executeStage(prepare, renderer, audio, cancellation, captures, trace, captureResponse = true, allowNoSpeech = false)
         }
 
         // Submission is intentionally never retried. A lost response can
@@ -270,17 +289,18 @@ class AdvancedAudioClient(
             audio,
             cancellation,
             captures,
+            trace,
             captureResponse = true,
         )
         recognition.poll?.let { poll ->
-            response = pollUntilTerminal(poll, renderer, audio, cancellation, retry, captures, onPhase)
+            response = pollUntilTerminal(poll, renderer, audio, cancellation, retry, captures, onPhase, trace)
         }
         recognition.resultSteps.forEach { stage ->
             onPhase?.invoke(PHASE_RESULT)
             response = if (stage.method.isReadOnly) {
-                executeRetryableStage(stage, renderer, audio, cancellation, retry, captures)
+                executeRetryableStage(stage, renderer, audio, cancellation, retry, captures, trace)
             } else {
-                executeStage(stage, renderer, audio, cancellation, captures, captureResponse = true)
+                executeStage(stage, renderer, audio, cancellation, captures, trace, captureResponse = true)
             }
         }
         return CompletedRequest(extract(response, recognition.finalText, transcript = true), response.statusCode)
@@ -294,6 +314,7 @@ class AdvancedAudioClient(
         retry: RetryConfig,
         captures: ResponseCaptureCollector,
         onPhase: ((String) -> Unit)?,
+        trace: AdvancedAudioDiagnostics,
     ): HttpResponseData {
         val startedAt = System.nanoTime()
         val timeoutNanos = poll.timeoutMs.coerceAtMost(MAX_TIMEOUT_MILLIS) * NANOS_PER_MILLISECOND
@@ -311,6 +332,7 @@ class AdvancedAudioClient(
                 cancellation,
                 retry,
                 captures,
+                trace,
                 captureResponse = false,
                 retryReadFailure = true,
                 deadlineNanos = deadlineNanos,
@@ -343,16 +365,24 @@ class AdvancedAudioClient(
         audio: WorkflowAudio,
         cancellation: AdvancedCancellationToken,
         retry: RetryConfig,
+        trace: AdvancedAudioDiagnostics,
     ): CompletedRequest {
         val retries = retryCount(retry)
         var attempt = 0
         while (true) {
+            trace.attempt(attempt + 1)
             try {
-                return executeRequestStreamOnce(recognition, renderer, audio, cancellation)
+                return executeRequestStreamOnce(recognition, renderer, audio, cancellation, trace)
             } catch (error: Throwable) {
-                if (!isStreamRetryable(error) || attempt >= retries) throw error
+                val retryable = isStreamRetryable(error)
+                if (!retryable || attempt >= retries) {
+                    trace.noRetry(retryable, retries - attempt)
+                    throw error
+                }
                 attempt += 1
-                waitCancellable(retry.delayMillis(attempt), cancellation)
+                val delay = retry.delayMillis(attempt)
+                trace.retry(attempt + 1, delay, error)
+                waitCancellable(delay, cancellation)
             }
         }
     }
@@ -362,11 +392,13 @@ class AdvancedAudioClient(
         renderer: WorkflowStageRenderer,
         audio: WorkflowAudio,
         cancellation: AdvancedCancellationToken,
+        trace: AdvancedAudioDiagnostics,
     ): CompletedRequest {
         val captures = ResponseCaptureCollector()
-        val spec = renderer.render(recognition.request, audio, captures.snapshot())
+        val spec = trace.request(renderer.render(recognition.request, audio, captures.snapshot()))
         val response = transport.execute(spec, cancellation)
         try {
+            trace.response(response.statusCode)
             var bufferedBody: ByteArray? = null
             if (response.statusCode == 400 || response.statusCode !in recognition.request.acceptedStatuses) {
                 val bounded = HttpResponseData(
@@ -523,6 +555,7 @@ class AdvancedAudioClient(
         cancellation: AdvancedCancellationToken,
         retry: RetryConfig,
         captures: ResponseCaptureCollector,
+        trace: AdvancedAudioDiagnostics,
         captureResponse: Boolean = true,
         retryReadFailure: Boolean = false,
         deadlineNanos: Long? = null,
@@ -532,6 +565,7 @@ class AdvancedAudioClient(
         var attempt = 0
         while (true) {
             ensureDeadline(deadlineNanos, pollTimeoutMs)
+            trace.attempt(attempt + 1)
             try {
                 val callTimeoutMillis = deadlineNanos?.let { deadline ->
                     val remaining = remainingMillisUntil(deadline)
@@ -546,6 +580,7 @@ class AdvancedAudioClient(
                     audio = audio,
                     cancellation = cancellation,
                     captures = captures,
+                    trace = trace,
                     captureResponse = captureResponse,
                     callTimeoutMillis = callTimeoutMillis,
                 )
@@ -559,13 +594,20 @@ class AdvancedAudioClient(
                 if (deadlineNanos != null && !cancellation.isCancelled() && System.nanoTime() >= deadlineNanos) {
                     throw AdvancedAudioExecutionException.PollTimeout(requireNotNull(pollTimeoutMs))
                 }
-                if (!isRetryable(error, retryReadFailure) || attempt >= retries) throw error
+                // This internal signal is a successful recognition outcome.
+                if (error is NoSpeechResponse) throw error
+                val retryable = isRetryable(error, retryReadFailure)
+                if (!retryable || attempt >= retries) {
+                    trace.noRetry(retryable, retries - attempt)
+                    throw error
+                }
                 attempt += 1
                 val delay = deadlineNanos?.let { deadline ->
                     val remaining = remainingMillisUntil(deadline)
                     if (remaining <= 0L) throw AdvancedAudioExecutionException.PollTimeout(requireNotNull(pollTimeoutMs))
                     min(retry.delayMillis(attempt), remaining)
                 } ?: retry.delayMillis(attempt)
+                trace.retry(attempt + 1, delay, error)
                 waitCancellable(delay, cancellation)
             }
         }
@@ -593,16 +635,18 @@ class AdvancedAudioClient(
         audio: WorkflowAudio,
         cancellation: AdvancedCancellationToken,
         captures: ResponseCaptureCollector,
+        trace: AdvancedAudioDiagnostics,
         captureResponse: Boolean,
         callTimeoutMillis: Long? = null,
         allowNoSpeech: Boolean = true,
     ): HttpResponseData {
         cancellation.throwIfCancelled()
         val response = transport.executeAndRead(
-            renderer.render(stage, audio, captures.snapshot()),
+            trace.request(renderer.render(stage, audio, captures.snapshot())),
             cancellation,
             callTimeoutMillis = callTimeoutMillis,
         )
+        trace.response(response.statusCode, response.body.size)
         if (allowNoSpeech && isNoWordsAsrResponse(response.statusCode, response.body.toString(Charsets.UTF_8))) {
             throw NoSpeechResponse(response.statusCode)
         }

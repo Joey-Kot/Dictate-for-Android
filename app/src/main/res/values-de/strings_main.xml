@@ -17,6 +17,8 @@
     <string name="main_import_json">JSON importieren</string>
     <string name="main_diagnostics_details">Diagnoseinformationen</string>
     <string name="main_no_diagnostics">Keine Diagnoseinformationen vorhanden</string>
+    <string name="main_diagnostics_copied">Diagnoseinformationen in die Zwischenablage kopiert</string>
+    <string name="main_diagnostics_copy_failed">Diagnoseinformationen konnten nicht kopiert werden</string>
     <string name="main_clear_diagnostics">Diagnoseinformationen löschen</string>
     <string name="main_diagnostics_cleared">Diagnoseinformationen gelöscht. Einstellungen und letzte Aufnahme bleiben erhalten.</string>
     <string name="main_open_accessibility">Bedienungshilfen öffnen</string>

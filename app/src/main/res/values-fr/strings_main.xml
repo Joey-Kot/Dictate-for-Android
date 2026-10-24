@@ -17,6 +17,8 @@
     <string name="main_import_json">Importer un JSON</string>
     <string name="main_diagnostics_details">Détails du diagnostic</string>
     <string name="main_no_diagnostics">Aucune information de diagnostic</string>
+    <string name="main_diagnostics_copied">Diagnostics copiés dans le presse-papiers</string>
+    <string name="main_diagnostics_copy_failed">Impossible de copier les diagnostics</string>
     <string name="main_clear_diagnostics">Effacer les diagnostics</string>
     <string name="main_diagnostics_cleared">Diagnostics effacés. Les paramètres et le dernier enregistrement sont conservés.</string>
     <string name="main_open_accessibility">Ouvrir les paramètres d’accessibilité</string>

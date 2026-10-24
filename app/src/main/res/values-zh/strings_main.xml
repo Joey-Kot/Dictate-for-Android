@@ -17,6 +17,8 @@
     <string name="main_import_json">导入 JSON</string>
     <string name="main_diagnostics_details">诊断详情</string>
     <string name="main_no_diagnostics">暂无诊断信息</string>
+    <string name="main_diagnostics_copied">诊断日志已复制到剪贴板</string>
+    <string name="main_diagnostics_copy_failed">复制诊断日志失败</string>
     <string name="main_clear_diagnostics">清理诊断</string>
     <string name="main_diagnostics_cleared">诊断信息已清理；设置和上一条录音未受影响</string>
     <string name="main_open_accessibility">打开无障碍设置</string>

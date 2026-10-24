@@ -6,6 +6,7 @@ import com.joeykot.dictate.advanced_audio.http.AdvancedHttpMethod
 import com.joeykot.dictate.advanced_audio.http.AdvancedHttpTransport
 import com.joeykot.dictate.advanced_audio.http.HttpBodySpec
 import com.joeykot.dictate.advanced_audio.http.HttpHeader
+import com.joeykot.dictate.advanced_audio.http.HttpDiagnosticEvent
 import com.joeykot.dictate.advanced_audio.http.HttpRequestSpec
 import com.joeykot.dictate.advanced_audio.http.HttpResponse
 import com.joeykot.dictate.advanced_audio.http.HttpTransportException
@@ -20,8 +21,80 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.net.UnknownHostException
+import java.net.ConnectException
 
 class AdvancedAudioClientTest {
+    @Test
+    fun diagnosticsRetainEachRetryAndTheFinalCauseWithoutSecrets() = withAudio { audio ->
+        val events = mutableListOf<HttpDiagnosticEvent>()
+        val transport = FakeTransport(
+            ScriptedOutcome.Failure(HttpTransportException.NetworkFailure(UnknownHostException("private-host"))),
+            ScriptedOutcome.Response(response(503, "private-server-error")),
+            ScriptedOutcome.Failure(HttpTransportException.NetworkFailure(ConnectException("private-token ECONNREFUSED"))),
+        )
+        val result = run(workflowConfig(requestRecognition()), transport, audio, retrying(), onDiagnostic = { events += it })
+        assertTrue(result is AdvancedAudioClient.Result.Failure)
+        val retries = events.filter { it.message.contains("retry_scheduled") }
+        assertEquals(2, retries.size)
+        assertTrue(retries[0].message.contains("phase=request attempt=1 request=1"))
+        assertTrue(retries[0].message.contains("nextAttempt=2 delayMs=0 kind=dns"))
+        assertTrue(retries[1].message.contains("phase=request attempt=2 request=2"))
+        assertTrue(events.any { it.message.contains("response status=503") })
+        val failure = events.single { it.message.contains("workflow_failure") }
+        assertTrue(failure.isError)
+        assertTrue(failure.message.contains("phase=request attempt=3 request=3"))
+        assertTrue(failure.message.contains("kind=connect causes=NetworkFailure>ConnectException errno=ECONNREFUSED"))
+        assertTrue(events.last().message.contains("workflow_end outcome=failure status=none placeholderEligible=true"))
+        assertFalse(events.any { it.message.contains("private") || it.message.contains("workflow.test") })
+    }
+
+    @Test
+    fun diagnosticsDistinguishHttpErrorsAndParsingFailuresFromSuccessAndNoSpeech() = withAudio { audio ->
+        for ((status, body, outcome) in listOf(
+            Triple(401, "private-error", "failure"),
+            Triple(200, "private-malformed-json", "failure"),
+            Triple(200, """{"text":"private transcript"}""", "success"),
+            Triple(200, """{"text":null}""", "success"),
+        )) {
+            val events = mutableListOf<HttpDiagnosticEvent>()
+            run(workflowConfig(requestRecognition()), FakeTransport(ScriptedOutcome.Response(response(status, body))),
+                audio, onDiagnostic = { events += it })
+            assertTrue(events.last().message, events.last().message.contains("workflow_end outcome=$outcome status=$status"))
+            if (body == "private-malformed-json") {
+                assertTrue(events.any { it.message.contains("Extraction>InvalidJson") })
+            }
+            if (body.contains("null")) assertTrue(events.last().message.contains("noSpeech=true"))
+            assertFalse(events.any { it.message.contains("private") })
+        }
+    }
+
+    @Test
+    fun asyncSubmitDiagnosticsReportFailureWithoutSuggestingARetry() = withAudio { audio ->
+        val events = mutableListOf<HttpDiagnosticEvent>()
+        val transport = FakeTransport(ScriptedOutcome.Failure(HttpTransportException.NetworkFailure(UnknownHostException())))
+        run(workflowConfig(asyncRecognition()), transport, audio, retrying(), onDiagnostic = { events += it })
+        assertEquals(1, transport.requests.size)
+        assertFalse(events.any { it.message.contains("retry_scheduled") })
+        assertTrue(events.last().message.contains("phase=submit attempt=1 request=1 workflow_end outcome=failure"))
+    }
+
+    @Test
+    fun cancellationAndConfigurationFailureAlwaysEndTheDiagnosticLifecycle() = withAudio { audio ->
+        for (cancel in listOf(false, true)) {
+            val events = mutableListOf<HttpDiagnosticEvent>()
+            val source = AdvancedCancellationSource()
+            if (cancel) source.cancel()
+            AdvancedAudioClient(FakeTransport()).transcribe(
+                AdvancedAudioClient.Request(AdvancedAudioConfig(enabled = false), emptyMap(), audio, "audio/wav", onDiagnostic = { events += it }),
+                source.token,
+            )
+            assertEquals(1, events.count { it.message.contains("workflow_start") })
+            assertEquals(1, events.count { it.message.contains("workflow_end") })
+            assertTrue(events.last().message.contains("outcome=${if (cancel) "cancelled" else "failure"}"))
+        }
+    }
+
     @Test
     fun requestReturnsTheExtractedFinalText() = withAudio { audio ->
         val transport = FakeTransport(ScriptedOutcome.Response(response(200, "{\"text\":\"synchronous result\"}")))
@@ -711,6 +784,7 @@ class AdvancedAudioClientTest {
         audio: File,
         retry: RetryConfig = RetryConfig(),
         secrets: Map<String, String> = emptyMap(),
+        onDiagnostic: ((HttpDiagnosticEvent) -> Unit)? = null,
     ): AdvancedAudioClient.Result = AdvancedAudioClient(transport).transcribe(
         AdvancedAudioClient.Request(
             config = config,
@@ -718,6 +792,7 @@ class AdvancedAudioClientTest {
             audioFile = audio,
             mimeType = "audio/wav",
             retry = retry,
+            onDiagnostic = onDiagnostic,
         ),
     )
 

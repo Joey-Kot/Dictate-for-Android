@@ -17,6 +17,8 @@
     <string name="main_import_json">JSON をインポート</string>
     <string name="main_diagnostics_details">診断情報</string>
     <string name="main_no_diagnostics">診断情報はありません</string>
+    <string name="main_diagnostics_copied">診断ログをクリップボードにコピーしました</string>
+    <string name="main_diagnostics_copy_failed">診断ログをコピーできませんでした</string>
     <string name="main_clear_diagnostics">診断情報を消去</string>
     <string name="main_diagnostics_cleared">診断情報を消去しました。設定と前回の録音は保持されています。</string>
     <string name="main_open_accessibility">ユーザー補助設定を開く</string>

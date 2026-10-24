@@ -2,8 +2,11 @@ package com.joeykot.dictate.advanced_audio.http
 
 import com.joeykot.dictate.advanced_audio.auth.HttpRequestSigner
 import com.joeykot.dictate.advanced_audio.auth.AwsSigV4Signer
+import okhttp3.Dns
+import okhttp3.OkHttpClient
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -11,6 +14,8 @@ import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.UnknownHostException
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
@@ -18,6 +23,196 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class OkHttpAdvancedTransportTest {
+    @Test
+    fun logsHttpStatusUploadAndDownloadWithoutRequestOrResponseContents() {
+        RawHttpServer().use { server ->
+            server.respond(403, "private response")
+            val events = CopyOnWriteArrayList<HttpDiagnosticEvent>()
+            val response = OkHttpAdvancedTransport().executeAndRead(
+                HttpRequestSpec(
+                    AdvancedHttpMethod.POST, "${server.url}/private-path?key=private-key",
+                    headers = listOf(HttpHeader("Authorization", "Bearer private-token")),
+                    body = HttpBodySpec.Json("private audio"),
+                    onDiagnostic = { events += it },
+                ),
+            )
+            assertEquals(403, response.statusCode)
+            val log = events.joinToString("\n") { it.message }
+            assertTrue(log, log.contains("upload_end durationMs="))
+            assertTrue(log, events.single { it.message.startsWith("upload_end") }.message.contains("bytes=13"))
+            assertTrue(log, log.contains("download_end durationMs="))
+            assertTrue(log, log.contains("status=403"))
+            assertTrue(log, log.contains("connection_acquired reused=false"))
+            assertEquals(1, events.count { it.message.startsWith("http_end outcome=complete") })
+            assertFalse(log, log.contains("private"))
+            assertFalse(log, log.contains(server.url))
+        }
+    }
+
+    @Test
+    fun fastDnsFailureLogsPhaseAndCauseWithoutTheExceptionMessage() {
+        val events = mutableListOf<HttpDiagnosticEvent>()
+        val client = OkHttpClient.Builder().dns(object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> =
+                throw UnknownHostException("private-token https://secret.test/private?key=credential")
+        }).build()
+        val error = captureFailure {
+            OkHttpAdvancedTransport(client).executeAndRead(
+                HttpRequestSpec(AdvancedHttpMethod.GET, "https://secret.test/private", onDiagnostic = { events += it }),
+            )
+        }
+        assertTrue(error is HttpTransportException.NetworkFailure)
+        val terminal = events.single { it.message.startsWith("http_end") }
+        assertTrue(terminal.isError)
+        assertTrue(terminal.message, terminal.message.contains("networkPhase=dns kind=dns causes=UnknownHostException"))
+        assertTrue(terminal.message.contains("elapsedMs="))
+        assertFalse(events.any { it.message.contains("private") || it.message.contains("credential") || it.message.contains("secret.test") })
+        assertFalse(events.any { it.message.startsWith("connect_start") })
+    }
+
+    @Test
+    fun refusedConnectionLogsTheConnectPhase() {
+        val port = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        val events = mutableListOf<HttpDiagnosticEvent>()
+        val error = captureFailure {
+            OkHttpAdvancedTransport().executeAndRead(
+                HttpRequestSpec(AdvancedHttpMethod.GET, "http://127.0.0.1:$port", onDiagnostic = { events += it }),
+            )
+        }
+        assertTrue(error is HttpTransportException.NetworkFailure)
+        val terminal = events.single { it.message.startsWith("http_end") }
+        assertTrue(terminal.message, terminal.message.contains("outcome=failure networkPhase=connect kind=connect"))
+        assertTrue(terminal.message, terminal.message.contains("ConnectException"))
+        assertFalse(events.any { it.message.contains("connection_acquired") })
+    }
+
+    @Test
+    fun tlsHandshakeFailureIsVisibleBeforeAnyHttpResponse() {
+        ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { server ->
+            val executor = Executors.newSingleThreadExecutor()
+            try {
+                val peer = executor.submit {
+                    server.accept().use { socket ->
+                        socket.soTimeout = 3_000
+                        check(socket.getInputStream().read(ByteArray(4096)) > 0)
+                        // A TLS fatal handshake_failure alert, without needing
+                        // certificates or a remote endpoint in this test.
+                        socket.getOutputStream().write(byteArrayOf(21, 3, 3, 0, 2, 2, 40))
+                        socket.getOutputStream().flush()
+                    }
+                }
+                val events = mutableListOf<HttpDiagnosticEvent>()
+                val error = captureFailure {
+                    OkHttpAdvancedTransport().executeAndRead(
+                        HttpRequestSpec(AdvancedHttpMethod.GET, "https://127.0.0.1:${server.localPort}/private", onDiagnostic = { events += it }),
+                        callTimeoutMillis = 3_000,
+                    )
+                }
+                peer.get(3, TimeUnit.SECONDS)
+                assertTrue(error is HttpTransportException.NetworkFailure)
+                assertTrue(events.any { it.message.startsWith("tls_start") })
+                val terminal = events.single { it.message.startsWith("http_end") }
+                assertTrue(terminal.message, terminal.message.contains("networkPhase=tls kind=tls_handshake"))
+                assertFalse(events.any { it.statusCode != null || it.message.contains("private") })
+            } finally {
+                executor.shutdownNow()
+            }
+        }
+    }
+
+    @Test
+    fun connectionReuseIsExplicitWithoutAnotherHandshake() {
+        RawHttpServer().use { server ->
+            server.respond(200, "ok", keepAliveResponses = 2)
+            val events = mutableListOf<HttpDiagnosticEvent>()
+            val transport = OkHttpAdvancedTransport()
+            repeat(2) {
+                transport.executeAndRead(HttpRequestSpec(AdvancedHttpMethod.GET, server.url, onDiagnostic = { events += it }))
+            }
+            val acquired = events.filter { it.message.startsWith("connection_acquired") }
+            assertEquals(2, acquired.size)
+            assertTrue(acquired[0].message.contains("reused=false"))
+            assertTrue(acquired[1].message.contains("reused=true"))
+            assertEquals(1, events.count { it.message.startsWith("connect_start") })
+            assertEquals(2, events.count { it.message.startsWith("http_end outcome=complete") })
+        }
+    }
+
+    @Test
+    fun truncatedResponseLogsReadFailureAndHttpStatus() {
+        RawHttpServer().use { server ->
+            server.respond(200, "partial", advertisedLength = 100)
+            val events = mutableListOf<HttpDiagnosticEvent>()
+            val error = captureFailure {
+                OkHttpAdvancedTransport().executeAndRead(
+                    HttpRequestSpec(AdvancedHttpMethod.GET, server.url, onDiagnostic = { events += it }),
+                )
+            }
+            assertTrue(error is HttpTransportException.ResponseReadFailure)
+            val terminal = events.single { it.message.startsWith("http_end") }
+            assertTrue(terminal.message, terminal.message.contains("outcome=failure networkPhase=download"))
+            assertTrue(terminal.message, terminal.message.contains("status=200"))
+            assertTrue(terminal.message, terminal.message.contains("ProtocolException"))
+        }
+    }
+
+    @Test
+    fun timeoutAndCancellationHaveDifferentTerminalOutcomes() {
+        for (cancel in listOf(false, true)) {
+            RawHttpServer().use { server ->
+                val gate = CountDownLatch(1)
+                val received = server.respond(200, "ok", beforeResponse = gate)
+                val events = CopyOnWriteArrayList<HttpDiagnosticEvent>()
+                val cancellation = AdvancedCancellationSource()
+                val executor = Executors.newSingleThreadExecutor()
+                try {
+                    val future = executor.submit<Throwable> {
+                        captureFailure {
+                            OkHttpAdvancedTransport().executeAndRead(
+                                HttpRequestSpec(AdvancedHttpMethod.GET, server.url, onDiagnostic = { events += it }),
+                                cancellation.token,
+                                callTimeoutMillis = if (cancel) 5_000 else 500,
+                            )
+                        }
+                    }
+                    received.get(3, TimeUnit.SECONDS)
+                    if (cancel) cancellation.cancel()
+                    val error = future.get(3, TimeUnit.SECONDS)
+                    assertTrue(if (cancel) error is HttpTransportException.Cancelled else error is HttpTransportException.NetworkFailure)
+                    val terminal = events.single { it.message.startsWith("http_end") }
+                    assertTrue(terminal.message, terminal.message.contains("outcome=${if (cancel) "cancelled" else "failure"}"))
+                    if (!cancel) assertTrue(terminal.message, terminal.message.contains("kind=timeout"))
+                } finally {
+                    gate.countDown()
+                    executor.shutdownNow()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun invalidUrlStillHasAStartAndTerminalDiagnostic() {
+        val events = mutableListOf<HttpDiagnosticEvent>()
+        val error = captureFailure {
+            OkHttpAdvancedTransport().execute(HttpRequestSpec(AdvancedHttpMethod.GET, "invalid private-url", onDiagnostic = { events += it }))
+        }
+        assertTrue(error is HttpTransportException.InvalidUrl)
+        assertEquals(2, events.size)
+        assertTrue(events.last().message.contains("networkPhase=request_build kind=request_configuration"))
+        assertFalse(events.any { it.message.contains("private-url") })
+    }
+
+    @Test
+    fun aBrokenDiagnosticSinkCannotFailARequest() {
+        RawHttpServer().use { server ->
+            server.respond(200, "ok")
+            val response = OkHttpAdvancedTransport().executeAndRead(
+                HttpRequestSpec(AdvancedHttpMethod.GET, server.url, onDiagnostic = { error("diagnostic sink failed") }),
+            )
+            assertEquals(200, response.statusCode)
+        }
+    }
+
     @Test
     fun sendsRenderedMethodUrlQueryHeadersAndMaterializedBody() {
         RawHttpServer().use { server ->
@@ -216,6 +411,8 @@ class OkHttpAdvancedTransportTest {
             status: Int,
             body: String,
             beforeResponse: CountDownLatch? = null,
+            keepAliveResponses: Int = 1,
+            advertisedLength: Int? = null,
         ): CompletableFuture<ReceivedRequest> {
             val captured = CompletableFuture<ReceivedRequest>()
             Thread({
@@ -223,26 +420,29 @@ class OkHttpAdvancedTransportTest {
                     server.accept().use { connection ->
                         activeSocket = connection
                         connection.soTimeout = 5_000
-                        val headers = readHeaders(connection)
-                        val contentLength = headers.lineSequence()
-                            .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
-                            ?.substringAfter(':')
-                            ?.trim()
-                            ?.toIntOrNull()
-                            ?: 0
-                        val chunked = headers.lineSequence().any {
-                            it.startsWith("Transfer-Encoding:", ignoreCase = true) &&
-                                it.substringAfter(':').contains("chunked", ignoreCase = true)
-                        }
-                        val payload = if (chunked) readChunked(connection.getInputStream())
-                        else readExactly(connection.getInputStream(), contentLength)
-                        captured.complete(ReceivedRequest(headers, payload))
-                        beforeResponse?.await(5, TimeUnit.SECONDS)
-                        val bytes = body.toByteArray(Charsets.UTF_8)
-                        connection.getOutputStream().apply {
-                            write("HTTP/1.1 $status Test\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
-                            write(bytes)
-                            flush()
+                        repeat(keepAliveResponses) { index ->
+                            val headers = readHeaders(connection)
+                            val contentLength = headers.lineSequence()
+                                .firstOrNull { it.startsWith("Content-Length:", ignoreCase = true) }
+                                ?.substringAfter(':')
+                                ?.trim()
+                                ?.toIntOrNull()
+                                ?: 0
+                            val chunked = headers.lineSequence().any {
+                                it.startsWith("Transfer-Encoding:", ignoreCase = true) &&
+                                    it.substringAfter(':').contains("chunked", ignoreCase = true)
+                            }
+                            val payload = if (chunked) readChunked(connection.getInputStream())
+                            else readExactly(connection.getInputStream(), contentLength)
+                            captured.complete(ReceivedRequest(headers, payload))
+                            beforeResponse?.await(5, TimeUnit.SECONDS)
+                            val bytes = body.toByteArray(Charsets.UTF_8)
+                            val connectionHeader = if (index + 1 < keepAliveResponses) "keep-alive" else "close"
+                            connection.getOutputStream().apply {
+                                write("HTTP/1.1 $status Test\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: ${advertisedLength ?: bytes.size}\r\nConnection: $connectionHeader\r\n\r\n".toByteArray())
+                                write(bytes)
+                                flush()
+                            }
                         }
                     }
                 } catch (error: Throwable) {

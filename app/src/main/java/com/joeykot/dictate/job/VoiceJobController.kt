@@ -949,7 +949,7 @@ class VoiceJobController(
             audioFile = output,
             mimeType = requireNotNull(job.encodingPlan).mimeType,
             retry = runtime.app.retry,
-            onPhase = { phase -> diagnostics.info("advanced-audio", "job=${job.id} $phase") },
+            onDiagnostic = { event -> logAdvancedDiagnostic(job.id, null, event) },
         )
         job.workerFuture = worker.submit {
             if (!isCurrent(job.id)) return@submit
@@ -1389,8 +1389,8 @@ class VoiceJobController(
                                     audioFile = item.value,
                                     mimeType = encodingPlan.mimeType,
                                     retry = runtime.app.retry,
-                                    onPhase = { phase ->
-                                        diagnostics.info("advanced-audio", "job=${job.id} segment=${item.index} $phase")
+                                    onDiagnostic = { event ->
+                                        logAdvancedDiagnostic(job.id, item.index, event)
                                     },
                                 ),
                                 batchCancellation.token,
@@ -1423,6 +1423,11 @@ class VoiceJobController(
                                 }
                                 val placeholder = advancedFailurePlaceholder(outcomeResult.error, runtime)
                                     ?: return SegmentedRequestResult.Advanced(outcomeResult.error)
+                                diagnostics.error(
+                                    "advanced-audio",
+                                    "job=${job.id} segment=${outcome.index} terminal_failure action=insert_placeholder " +
+                                        "status=${outcomeResult.error.statusCode ?: "none"} elapsedMs=${outcomeResult.error.elapsedMillis}",
+                                )
                                 text.append(placeholder)
                             }
 
@@ -2073,6 +2078,7 @@ class VoiceJobController(
                     if (placeholder == null) {
                         finishFailure(jobId, message)
                     } else {
+                        diagnostics.error("advanced-audio", "job=$jobId terminal_failure action=insert_placeholder")
                         deliverResult(jobId, placeholder)
                     }
                 }
@@ -2080,6 +2086,16 @@ class VoiceJobController(
 
             is AdvancedAudioClient.Result.Cancelled -> Unit
         }
+    }
+
+    private fun logAdvancedDiagnostic(
+        jobId: Long,
+        segment: Int?,
+        event: com.joeykot.dictate.advanced_audio.http.HttpDiagnosticEvent,
+    ) {
+        val message = "job=$jobId" + (segment?.let { " segment=$it" } ?: "") + " ${event.message}"
+        if (event.isError) diagnostics.error("advanced-audio", message)
+        else diagnostics.info("advanced-audio", message)
     }
 
     private fun deliverResult(jobId: Long, text: String) {

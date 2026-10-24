@@ -103,6 +103,8 @@ data class HttpRequestSpec(
      * raw-audio bodies remain ineligible for dynamic signing.
      */
     val remoteStorageSigningPayload: RemoteStorageSigningPayload? = null,
+    /** Per-execution diagnostics; never stored on a shared transport or client. */
+    val onDiagnostic: ((HttpDiagnosticEvent) -> Unit)? = null,
 )
 
 /**

@@ -15,6 +15,19 @@ class Diagnostics(context: Context) {
         timeZone = TimeZone.getTimeZone("UTC")
     }
 
+    init {
+        // The diagnostics panel must retain the previous process's failures.
+        // Stream the file so an older/larger log does not require an unbounded read.
+        runCatching {
+            if (logFile.exists()) logFile.useLines { lines ->
+                lines.forEach { line ->
+                    entries.addLast(line)
+                    while (entries.size > MAX_MEMORY_ENTRIES) entries.removeFirst()
+                }
+            }
+        }
+    }
+
     @Synchronized
     fun info(stage: String, message: String) = append("INFO", stage, message)
 
@@ -22,7 +35,7 @@ class Diagnostics(context: Context) {
     fun error(stage: String, message: String) = append("ERROR", stage, message)
 
     @Synchronized
-    fun snapshot(maxEntries: Int = 80): String = entries.takeLast(maxEntries).joinToString("\n")
+    fun snapshot(maxEntries: Int = MAX_MEMORY_ENTRIES): String = entries.takeLast(maxEntries).joinToString("\n")
 
     @Synchronized
     fun clear() {
@@ -58,6 +71,8 @@ class Diagnostics(context: Context) {
         runCatching {
             rotateIfNeeded()
             logFile.appendText(entry + "\n")
+        }.onFailure {
+            Log.e(TAG, "Could not persist diagnostics (${it.javaClass.simpleName})")
         }
     }
 
@@ -69,7 +84,7 @@ class Diagnostics(context: Context) {
 
     private companion object {
         const val TAG = "Dictate"
-        const val MAX_MEMORY_ENTRIES = 200
-        const val MAX_FILE_BYTES = 128L * 1024L
+        const val MAX_MEMORY_ENTRIES = 2_000
+        const val MAX_FILE_BYTES = 512L * 1024L
     }
 }

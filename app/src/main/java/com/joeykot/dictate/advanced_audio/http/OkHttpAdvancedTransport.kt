@@ -43,6 +43,22 @@ class OkHttpAdvancedTransport(
         cancellation: AdvancedCancellationToken,
         callTimeoutMillis: Long?,
     ): HttpResponse {
+        val trace = HttpCallDiagnostics(request.onDiagnostic, cancellation::isCancelled)
+        trace.start(request.method.wireName)
+        return try {
+            executeTraced(request, cancellation, callTimeoutMillis, trace)
+        } catch (error: Exception) {
+            trace.failure(error)
+            throw error
+        }
+    }
+
+    private fun executeTraced(
+        request: HttpRequestSpec,
+        cancellation: AdvancedCancellationToken,
+        callTimeoutMillis: Long?,
+        trace: HttpCallDiagnostics,
+    ): HttpResponse {
         cancellation.throwIfCancelled()
         val url = buildUrl(request.url, request.query)
         val builtBody = buildBody(request.body)
@@ -93,15 +109,17 @@ class OkHttpAdvancedTransport(
         }
 
         val okHttpRequest = buildOkHttpRequest(request.method, url, headers, builtBody.requestBody)
-        val callClient = callTimeoutMillis?.let { timeoutMillis ->
+        // Derived clients share the dispatcher and connection pool. Only this
+        // call's listener/deadline changes; concurrent segments cannot mix logs.
+        val callClient = client.newBuilder().eventListener(trace).apply {
             // OkHttp's call timeout covers the response body as well as the
             // initial execute() call.  This is required for poll deadlines:
             // a server that accepts a connection but never responds must not
             // hold the workflow past its declared timeout.
-            client.newBuilder()
-                .callTimeout(timeoutMillis.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
-                .build()
-        } ?: client
+            callTimeoutMillis?.let { timeoutMillis ->
+                callTimeout(timeoutMillis.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
+            }
+        }.build()
         val call = callClient.newCall(okHttpRequest)
         val cancellationRegistration = cancellation.onCancellation { call.cancel() }
         try {

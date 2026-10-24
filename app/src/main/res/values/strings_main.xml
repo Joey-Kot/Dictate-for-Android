@@ -17,6 +17,8 @@
     <string name="main_import_json">Import JSON</string>
     <string name="main_diagnostics_details">Diagnostics</string>
     <string name="main_no_diagnostics">No diagnostics available</string>
+    <string name="main_diagnostics_copied">Diagnostics copied to clipboard</string>
+    <string name="main_diagnostics_copy_failed">Could not copy diagnostics</string>
     <string name="main_clear_diagnostics">Clear diagnostics</string>
     <string name="main_diagnostics_cleared">Diagnostics cleared. Settings and the last recording are unchanged.</string>
     <string name="main_open_accessibility">Open accessibility settings</string>
