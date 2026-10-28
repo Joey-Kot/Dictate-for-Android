@@ -3,6 +3,9 @@ package com.joeykot.dictate.advanced_audio.realtime
 import com.joeykot.dictate.advanced_audio.http.AdvancedCancellationToken
 import com.joeykot.dictate.advanced_audio.http.CancellationRegistration
 import com.joeykot.dictate.advanced_audio.http.HttpHeader
+import com.joeykot.dictate.network.AppHttpClient
+import com.joeykot.dictate.network.dns.DnsCallContext
+import okhttp3.Dns
 import okhttp3.Headers
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -134,9 +137,18 @@ class OkHttpRealtimeWebSocketFactory(
             }
         }
 
+        val handshakeCancelled = AtomicBoolean(false)
+        // OkHttp deliberately removes EventListener from WebSocket calls. Supply the
+        // cancellation scope at the DNS boundary instead of depending on dnsStart.
+        val handshakeClient = client.newBuilder().dns(object : Dns {
+            override fun lookup(hostname: String) = DnsCallContext.withCancellation(
+                { handshakeCancelled.get() || cancellation.isCancelled() },
+            ) { client.dns.lookup(hostname) }
+        }).build()
         val webSocket = try {
-            client.newWebSocket(okRequest, listener)
+            handshakeClient.newWebSocket(okRequest, listener)
         } catch (_: RuntimeException) {
+            handshakeCancelled.set(true)
             throw RealtimeSessionException.WebSocketConnectionFailed
         }
         val registration = cancellation.onCancellation { webSocket.cancel() }
@@ -168,6 +180,7 @@ class OkHttpRealtimeWebSocketFactory(
                 }
             }
         } catch (error: RealtimeSessionException) {
+            handshakeCancelled.set(true)
             registration.close()
             webSocket.cancel()
             throw error
@@ -330,7 +343,7 @@ class OkHttpRealtimeWebSocketFactory(
             timeoutMillis: Long,
         ): QueuedEvent? = events.poll(timeoutMillis)
 
-        fun newDefaultClient(): OkHttpClient = OkHttpClient.Builder()
+        fun newDefaultClient(): OkHttpClient = AppHttpClient.client.newBuilder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             // A realtime session is finalized by the workflow timeout, not an

@@ -129,9 +129,14 @@ internal class HttpCallDiagnostics(
             (status?.let { " status=$it" } ?: ""), isError, status))
     }
 
-    override fun dnsStart(call: Call, domainName: String) = begin("dns")
-    override fun dnsEnd(call: Call, domainName: String, inetAddressList: List<InetAddress>) =
+    override fun dnsStart(call: Call, domainName: String) {
+        com.joeykot.dictate.network.dns.DnsCallContext.enter(call)
+        begin("dns")
+    }
+    override fun dnsEnd(call: Call, domainName: String, inetAddressList: List<InetAddress>) {
+        com.joeykot.dictate.network.dns.DnsCallContext.clear()
         end("dns", " addresses=${inetAddressList.size}")
+    }
 
     @Synchronized
     override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) {
@@ -191,5 +196,8 @@ internal class HttpCallDiagnostics(
         record("http_end outcome=${if (isCancelled()) "cancelled" else "complete"}")
     }
 
-    override fun callFailed(call: Call, ioe: IOException) = failure(ioe)
+    override fun callFailed(call: Call, ioe: IOException) {
+        com.joeykot.dictate.network.dns.DnsCallContext.clear()
+        failure(ioe)
+    }
 }

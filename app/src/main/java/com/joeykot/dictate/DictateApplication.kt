@@ -3,6 +3,7 @@ package com.joeykot.dictate
 import android.app.Application
 import com.joeykot.dictate.i18n.AppStrings
 import com.joeykot.dictate.job.VoiceJobController
+import com.joeykot.dictate.network.dns.AndroidDnsNetworkState
 import com.joeykot.dictate.settings.SettingsRepository
 import com.joeykot.dictate.util.AudioFileStore
 import com.joeykot.dictate.util.Diagnostics
@@ -22,6 +23,7 @@ class DictateApplication : Application() {
         AppStrings.refresh(this)
         settingsRepository = SettingsRepository(this)
         diagnostics = Diagnostics(this)
+        AndroidDnsNetworkState.install(this, diagnostics)
         audioFileStore = AudioFileStore(this).also { it.cleanupTemporaryFiles() }
         voiceJobController = VoiceJobController(
             application = this,

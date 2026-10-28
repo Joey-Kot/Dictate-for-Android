@@ -64,8 +64,8 @@ class AdvancedAudioJobTest {
     private val application: DictateApplication
         get() = RuntimeEnvironment.getApplication() as DictateApplication
 
-    private val controller: VoiceJobController
-        get() = application.voiceJobController
+    private lateinit var controller: VoiceJobController
+    private val completedTranscriptions = AtomicInteger()
 
     private lateinit var server: ServerSocket
     private lateinit var serverExecutor: ExecutorService
@@ -78,6 +78,9 @@ class AdvancedAudioJobTest {
 
     @Before
     fun setUp() {
+        controller = VoiceJobController(application, application.settingsRepository,
+            application.audioFileStore, application.diagnostics,
+            onTranscriptionCompleted = { completedTranscriptions.incrementAndGet() })
         server = ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
         serverExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
         serverExecutor.submit {
@@ -143,6 +146,7 @@ class AdvancedAudioJobTest {
         assertEquals("advanced result", results.single().text)
         assertEquals(1, requestCount.get())
         assertEquals("POST /advanced HTTP/1.1", requestLines.single())
+        assertEquals(0, completedTranscriptions.get())
         assertFalse(states.contains(JobState.RETRY_WAITING))
         assertEquals(JobState.IDLE, controller.currentState().state)
         val log = application.diagnostics.snapshot()
@@ -179,6 +183,59 @@ class AdvancedAudioJobTest {
             assertEquals("existing clipboard", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
         }
         assertEquals(4, requestCount.get())
+        assertEquals(2, completedTranscriptions.get())
+    }
+
+    @Test
+    fun automaticRetryCountsOnlyOnceAfterTheWholeVoiceJobCompletes() {
+        val prepared = startPausedConnectionTest(requestWorkflow(), retryEnabled = true, startRequest = false) {}
+        val modeField = prepared.job.javaClass.getDeclaredField("mode").apply { isAccessible = true }
+        modeField.set(prepared.job, checkNotNull(modeField.type.enumConstants).single { (it as Enum<*>).name == "VOICE" })
+        val id = jobId(prepared.job)
+        val handler = VoiceJobController::class.java.declaredMethods.single { it.name == "handleRequestResult" }
+            .apply { isAccessible = true }
+        try {
+            handler.invoke(controller, id, TranscriptionClient.Result.Failure(
+                TranscriptionClient.FailureKind.DNS, "temporary DNS failure", retryable = true, elapsedMillis = 1))
+            assertEquals(JobState.RETRY_WAITING, controller.currentState().state)
+            assertEquals(0, completedTranscriptions.get())
+            handler.invoke(controller, id, TranscriptionClient.Result.Success("", 200, 1))
+            assertEquals(JobState.IDLE, controller.currentState().state)
+            assertEquals(1, completedTranscriptions.get())
+            handler.invoke(controller, id, TranscriptionClient.Result.Success("late", 200, 1))
+            assertEquals(1, completedTranscriptions.get())
+        } finally { prepared.releaseWorker() }
+    }
+
+    @Test
+    fun cancelledVoiceJobAndLateResultDoNotCountAsCompletedTranscriptions() {
+        val prepared = startPausedConnectionTest(requestWorkflow(), retryEnabled = false, startRequest = false) {}
+        val modeField = prepared.job.javaClass.getDeclaredField("mode").apply { isAccessible = true }
+        modeField.set(prepared.job, checkNotNull(modeField.type.enumConstants).single { (it as Enum<*>).name == "VOICE" })
+        val id = jobId(prepared.job)
+        try {
+            invokeStartRequest(id)
+            controller.handleDoubleTap(JobState.REQUESTING)
+            VoiceJobController::class.java.declaredMethods.single { it.name == "handleRequestResult" }
+                .apply { isAccessible = true }
+                .invoke(controller, id, TranscriptionClient.Result.Success("late", 200, 1))
+            assertEquals(0, completedTranscriptions.get())
+            assertEquals(JobState.IDLE, controller.currentState().state)
+        } finally { prepared.releaseWorker() }
+    }
+
+    @Test
+    fun completedRewriteDoesNotCountAsATranscription() {
+        val prepared = startPausedConnectionTest(requestWorkflow(), retryEnabled = false, startRequest = false) {}
+        val modeField = prepared.job.javaClass.getDeclaredField("mode").apply { isAccessible = true }
+        modeField.set(prepared.job, checkNotNull(modeField.type.enumConstants).single { (it as Enum<*>).name == "POST_PROCESSING" })
+        try {
+            VoiceJobController::class.java.declaredMethods.single { it.name == "handleRequestResult" }
+                .apply { isAccessible = true }
+                .invoke(controller, jobId(prepared.job), TranscriptionClient.Result.Success("rewritten text", 200, 1))
+            await { controller.currentState().state == JobState.IDLE }
+            assertEquals(0, completedTranscriptions.get())
+        } finally { prepared.releaseWorker() }
     }
 
     @Test

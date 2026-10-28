@@ -1,0 +1,58 @@
+package com.joeykot.dictate.network.dns
+
+internal data class DohProvider(
+    val id: String,
+    val url: String,
+    val bootstrap: List<String>,
+    val source: String,
+)
+
+/** Public RFC 8484 endpoints; prefer the provider's unfiltered service where offered. */
+internal object DohProviderCatalog {
+    val providers = listOf(
+        DohProvider("alidns", "https://dns.alidns.com/dns-query",
+            listOf("223.5.5.5", "223.6.6.6", "2400:3200::1", "2400:3200:baba::1"),
+            "https://www.alidns.com/"),
+        DohProvider("dnspod", "https://doh.pub/dns-query",
+            listOf("1.12.12.12", "120.53.53.53"), "https://www.dnspod.cn/products/publicdns"),
+        DohProvider("360", "https://doh.360.cn/dns-query",
+            listOf("101.198.198.198", "101.198.199.200"), "https://sdns.360.net/dnsPublic.html"),
+        DohProvider("cloudflare", "https://cloudflare-dns.com/dns-query",
+            listOf("1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"),
+            "https://developers.cloudflare.com/1.1.1.1/infrastructure/network-operators/"),
+        DohProvider("google", "https://dns.google/dns-query",
+            listOf("8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"),
+            "https://developers.google.com/speed/public-dns/docs/doh"),
+        DohProvider("opendns", "https://dns.opendns.com/dns-query",
+            listOf("208.67.222.222", "208.67.220.220", "2620:119:35::35", "2620:119:53::53"),
+            "https://umbrella.cisco.com/blog/enhancing-support-dns-encryption-with-dns-over-https"),
+        DohProvider("quad9", "https://dns10.quad9.net/dns-query",
+            listOf("9.9.9.10", "149.112.112.10", "2620:fe::10", "2620:fe::fe:10"),
+            "https://docs.quad9.net/services/"),
+        DohProvider("adguard", "https://unfiltered.adguard-dns.com/dns-query",
+            listOf("94.140.14.140", "94.140.14.141", "2a10:50c0::1:ff", "2a10:50c0::2:ff"),
+            "https://adguard-dns.io/kb/general/dns-providers/"),
+        DohProvider("controld", "https://freedns.controld.com/p0",
+            listOf("76.76.2.0", "76.76.10.0", "2606:1a40::0", "2606:1a40:1::0"),
+            "https://docs.controld.com/docs/free-dns"),
+        DohProvider("mullvad", "https://dns.mullvad.net/dns-query",
+            listOf("194.242.2.2", "2a07:e340::2"),
+            "https://mullvad.net/en/help/dns-over-https-and-dns-over-tls"),
+        DohProvider("cira", "https://private.canadianshield.cira.ca/dns-query",
+            listOf("149.112.121.10", "149.112.122.10", "2620:10a:80bb::10", "2620:10a:80bc::10"),
+            "https://www.cira.ca/en/canadian-shield/configure/summary-cira-canadian-shield-dns-resolver-addresses/"),
+        DohProvider("dnssb", "https://dns.sb/dns-query",
+            listOf("185.222.222.222", "45.11.45.11", "2a09::", "2a11::"), "https://dns.sb/doh/"),
+        DohProvider("cznic", "https://odvr.nic.cz/",
+            listOf("193.17.47.1", "185.43.135.1", "2001:148f:ffff::1", "2001:148f:fffe::1"),
+            "https://www.nic.cz/odvr/"),
+        DohProvider("restena", "https://dns1.restena.lu/dns-query",
+            listOf("158.64.1.25", "2001:a18:1::25"),
+            "https://restena.lu/en/document/404-authenticate-servers-community-dns-resolvers"),
+        DohProvider("dns4eu", "https://unfiltered.joindns4.eu/dns-query",
+            listOf("86.54.11.100", "86.54.11.200", "2a13:1001::86:54:11:100", "2a13:1001::86:54:11:200"),
+            "https://www.joindns4.eu/for-public"),
+        DohProvider("uncensoreddns", "https://anycast.uncensoreddns.org/dns-query",
+            listOf("91.239.100.100", "2001:67c:28a4::"), "https://blog.uncensoreddns.org/"),
+    )
+}

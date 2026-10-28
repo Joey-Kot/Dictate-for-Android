@@ -3,18 +3,22 @@ package com.joeykot.dictate.network
 import com.joeykot.dictate.R
 import com.joeykot.dictate.i18n.AppStrings
 import com.joeykot.dictate.util.Diagnostics
+import okhttp3.Call
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.RequestBody
+import okhttp3.Response
+import okio.BufferedSink
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.ConnectException
-import java.net.HttpURLConnection
 import java.net.NoRouteToHostException
 import java.net.SocketException
-import java.net.SocketTimeoutException
-import java.net.URL
 import java.net.UnknownHostException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -24,7 +28,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.net.ssl.SSLException
 
-class TranscriptionClient(private val diagnostics: Diagnostics) {
+class TranscriptionClient(
+    private val diagnostics: Diagnostics,
+    private val httpClient: OkHttpClient = AppHttpClient.client,
+) {
     data class Request(
         val endpoint: String,
         val apiKey: String,
@@ -183,7 +190,7 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
         val cancelled = AtomicBoolean(false)
         val openSessions = AtomicInteger(0)
         val activeOperations = AtomicInteger(0)
-        val activeConnections = ConcurrentHashMap<Long, HttpURLConnection>()
+        val activeConnections = ConcurrentHashMap<Long, Call>()
     }
 
     private val parentJobs = ConcurrentHashMap<Long, ParentJobState>()
@@ -264,7 +271,8 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
         val startedAt = System.nanoTime()
         var phase = Phase.CONNECTING
         val writeTimedOut = AtomicBoolean(false)
-        var connection: HttpURLConnection? = null
+        var connection: Call? = null
+        var response: Response? = null
         state.activeOperations.incrementAndGet()
         fun isCancelled(): Boolean = state.cancelled.get() || batchAborted.get()
 
@@ -273,45 +281,41 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
             validateRequest(request)
             val boundary = "DictateBoundary${operation.parentJobId.toString(16)}${operation.requestId.toString(16)}${System.nanoTime().toString(16)}"
             val body = MultipartBody(boundary, request)
-            val openedConnection = (URL(request.endpoint).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doInput = true
-                doOutput = true
-                useCaches = false
-                instanceFollowRedirects = false
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                setRequestProperty("Accept", "application/json")
-                setRequestProperty("Authorization", "Bearer ${request.apiKey}")
-                setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-                setFixedLengthStreamingMode(body.contentLength)
+            val upload = object : RequestBody() {
+                override fun contentType() = "multipart/form-data; boundary=$boundary".toMediaType()
+                override fun contentLength() = body.contentLength
+                override fun isOneShot() = true
+                override fun writeTo(sink: BufferedSink) {
+                    phase = Phase.WRITING
+                    val timeoutFuture = watchdog.schedule({
+                        writeTimedOut.set(true)
+                        state.activeConnections[operation.requestId]?.cancel()
+                    }, WRITE_TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS)
+                    try {
+                        body.writeTo(sink.outputStream()) {
+                            if (isCancelled()) throw JobCancelledException()
+                        }
+                        sink.flush()
+                    } finally {
+                        timeoutFuture.cancel(false)
+                    }
+                    phase = Phase.READING
+                }
             }
+            val openedConnection = httpClient.newCall(okhttp3.Request.Builder()
+                .url(request.endpoint)
+                .header("Accept", "application/json")
+                .header("Authorization", "Bearer ${request.apiKey}")
+                .post(upload).build())
             connection = openedConnection
             state.activeConnections[operation.requestId] = openedConnection
             if (isCancelled()) {
-                openedConnection.disconnect()
+                openedConnection.cancel()
                 return Result.Cancelled
             }
 
-            openedConnection.connect()
-            phase = Phase.WRITING
-            val timeoutFuture = watchdog.schedule(
-                {
-                    writeTimedOut.set(true)
-                    state.activeConnections[operation.requestId]?.disconnect()
-                },
-                WRITE_TIMEOUT_MS.toLong(),
-                TimeUnit.MILLISECONDS,
-            )
-            try {
-                openedConnection.outputStream.buffered(FILE_BUFFER_SIZE).use { output ->
-                    body.writeTo(output) {
-                        if (isCancelled()) throw JobCancelledException()
-                    }
-                }
-            } finally {
-                timeoutFuture.cancel(false)
-            }
+            val receivedResponse = openedConnection.execute()
+            response = receivedResponse
 
             if (isCancelled()) return Result.Cancelled
             if (writeTimedOut.get()) {
@@ -325,8 +329,8 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
             }
 
             phase = Phase.READING
-            val status = openedConnection.responseCode
-            val responseBody = readResponseBody(openedConnection, status)
+            val status = receivedResponse.code
+            val responseBody = readResponseBody(receivedResponse)
             val elapsed = elapsedMillis(startedAt)
             if (isCancelled()) return Result.Cancelled
 
@@ -379,7 +383,7 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
                 startedAt,
                 request.apiKey,
             )
-        } catch (error: SocketTimeoutException) {
+        } catch (error: InterruptedIOException) {
             if (isCancelled()) {
                 Result.Cancelled
             } else {
@@ -423,6 +427,8 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
         } catch (error: IOException) {
             if (isCancelled()) {
                 Result.Cancelled
+            } else if (writeTimedOut.get()) {
+                failure(FailureKind.WRITE_TIMEOUT, AppStrings.get(R.string.val_upload_timeout, "Audio upload timed out"), true, startedAt, request.apiKey)
             } else {
                 failure(
                     FailureKind.IO,
@@ -446,7 +452,8 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
             }
         } finally {
             connection?.let { state.activeConnections.remove(operation.requestId, it) }
-            connection?.disconnect()
+            response?.close()
+            connection?.cancel()
             state.activeOperations.decrementAndGet()
             removeJobStateIfUnused(operation.parentJobId, state)
         }
@@ -475,7 +482,7 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
 
     private fun disconnectActiveOperations(state: ParentJobState) {
         state.activeConnections.values.toList().forEach { connection ->
-            runCatching { connection.disconnect() }
+            runCatching { connection.cancel() }
         }
     }
 
@@ -508,9 +515,8 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
         require(request.audioFile.isFile && request.audioFile.length() > 0L) { AppStrings.get(R.string.val_audio_missing, "The audio file to upload is missing or empty") }
     }
 
-    private fun readResponseBody(connection: HttpURLConnection, status: Int): String {
-        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            ?: return ""
+    private fun readResponseBody(response: Response): String {
+        val stream = response.body?.byteStream() ?: return ""
         stream.use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(8 * 1024)
@@ -630,9 +636,7 @@ class TranscriptionClient(private val diagnostics: Diagnostics) {
                     require(!get("model").isNullOrBlank()) { AppStrings.get(R.string.val_merged_model_empty, "The merged model cannot be empty") }
                 }
 
-        const val CONNECT_TIMEOUT_MS = 15_000
         const val WRITE_TIMEOUT_MS = 30_000
-        const val READ_TIMEOUT_MS = 60_000
         const val FILE_BUFFER_SIZE = 16 * 1024
         const val MAX_RESPONSE_BYTES = 2 * 1024 * 1024
         const val MAX_SERVER_SUMMARY = 2_000

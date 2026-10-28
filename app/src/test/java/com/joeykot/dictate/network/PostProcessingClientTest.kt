@@ -4,6 +4,10 @@ import com.joeykot.dictate.model.PostProcessingConfig
 import com.joeykot.dictate.model.PostProcessingProvider
 import com.joeykot.dictate.model.PromptConfig
 import com.joeykot.dictate.util.Diagnostics
+import okhttp3.Call
+import okhttp3.Dns
+import okhttp3.EventListener
+import okhttp3.OkHttpClient
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
@@ -14,16 +18,84 @@ import org.robolectric.annotation.Config
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class PostProcessingClientTest {
+    @Test
+    fun standardClientsTryTheNextAddressBeforeSendingExactlyOnePost() {
+        for (rewrite in listOf(false, true)) TestServer().use { server ->
+            val connections = AtomicInteger()
+            val posts = AtomicInteger()
+            val client = AppHttpClient.client.newBuilder()
+                .proxy(Proxy.NO_PROXY)
+                .dns(object : Dns {
+                    override fun lookup(hostname: String) = listOf(
+                        InetAddress.getByName("127.0.0.2"), InetAddress.getByName("127.0.0.1"),
+                    )
+                })
+                .eventListener(object : EventListener() {
+                    override fun connectStart(call: Call, inetSocketAddress: InetSocketAddress, proxy: Proxy) { connections.incrementAndGet() }
+                    override fun requestHeadersStart(call: Call) { posts.incrementAndGet() }
+                })
+                .connectTimeout(500, TimeUnit.MILLISECONDS)
+                .callTimeout(3, TimeUnit.SECONDS)
+                .build()
+            val captured = server.respond(200, if (rewrite) """{"choices":[{"message":{"content":"ok"}}]}""" else """{"text":"ok"}""")
+            val result = executeStandard(client, server.url.replace("127.0.0.1", "api.vendor.com"), rewrite)
+            assertTrue("rewrite=$rewrite: $result", result is TranscriptionClient.Result.Success)
+            assertEquals("ok", (result as TranscriptionClient.Result.Success).text)
+            captured.get(3, TimeUnit.SECONDS)
+            assertEquals(2, connections.get())
+            assertEquals(1, posts.get())
+        }
+    }
+
+    @Test
+    fun uploadedStandardPostsAreNotReplayedAfterDisconnectOrRetryableHttpResponses() {
+        for (rewrite in listOf(false, true)) for (status in listOf(0, 408, 503)) TestServer().use { server ->
+            val posts = AtomicInteger()
+            val client = AppHttpClient.client.newBuilder()
+                .proxy(Proxy.NO_PROXY)
+                .eventListener(object : EventListener() {
+                    override fun requestHeadersStart(call: Call) { posts.incrementAndGet() }
+                })
+                .readTimeout(500, TimeUnit.MILLISECONDS)
+                .callTimeout(2, TimeUnit.SECONDS)
+                .build()
+            val captured = server.respond(status, "{}", disconnectAfterUpload = status == 0,
+                responseHeaders = mapOf("Retry-After" to "0"))
+            val result = executeStandard(client, server.url, rewrite)
+            assertTrue("rewrite=$rewrite status=$status: $result", result is TranscriptionClient.Result.Failure)
+            if (status != 0) assertEquals(status, (result as TranscriptionClient.Result.Failure).statusCode)
+            captured.get(3, TimeUnit.SECONDS)
+            assertEquals("rewrite=$rewrite status=$status", 1, posts.get())
+        }
+    }
+
+    private fun executeStandard(client: OkHttpClient, baseUrl: String, rewrite: Boolean): TranscriptionClient.Result {
+        val context: android.content.Context = RuntimeEnvironment.getApplication()
+        if (rewrite) return PostProcessingClient(Diagnostics(context), client).execute(
+            PostProcessingConfig(baseUrl = baseUrl, model = "test"), "key", PromptConfig(prompt = "Summarize"), "input",
+        ) { true }
+        val audio = File.createTempFile("network-route-test-", ".wav", context.cacheDir).apply { writeText("test-audio") }
+        return try {
+            TranscriptionClient(Diagnostics(context), client).transcribe(1, TranscriptionClient.Request(
+                endpoint = "$baseUrl/v1/audio/transcriptions", apiKey = "key", model = "test",
+                additionalFields = linkedMapOf(), audioFile = audio, mimeType = "audio/wav",
+            ))
+        } finally { audio.delete() }
+    }
+
     @Test
     fun independentProvidersUseTheirOwnRouteAuthenticationAndJsonOrStreamParser() {
         for (provider in PostProcessingProvider.entries) for (streaming in listOf(false, true)) {
@@ -365,6 +437,8 @@ class PostProcessingClientTest {
             body: String,
             release: CountDownLatch? = null,
             contentType: String = "application/json",
+            disconnectAfterUpload: Boolean = false,
+            responseHeaders: Map<String, String> = emptyMap(),
         ): CompletableFuture<Pair<String, String>> {
             val captured = CompletableFuture<Pair<String, String>>()
             Thread({
@@ -391,9 +465,11 @@ class PostProcessingClientTest {
                         }
                         captured.complete(header to payload.toString(Charsets.UTF_8))
                         release?.await(5, TimeUnit.SECONDS)
+                        if (disconnectAfterUpload) return@use
                         val bytes = body.toByteArray(Charsets.UTF_8)
                         connection.getOutputStream().apply {
-                            write("HTTP/1.1 $status Test\r\nContent-Type: $contentType\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
+                            val extraHeaders = responseHeaders.entries.joinToString("") { "${it.key}: ${it.value}\r\n" }
+                            write("HTTP/1.1 $status Test\r\nContent-Type: $contentType\r\nContent-Length: ${bytes.size}\r\n${extraHeaders}Connection: close\r\n\r\n".toByteArray())
                             write(bytes)
                             flush()
                         }

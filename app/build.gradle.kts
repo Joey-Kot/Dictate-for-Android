@@ -137,8 +137,8 @@ tasks.matching { it.name == "mergeDebugJniLibFolders" }.configureEach {
 dependencies {
     implementation("com.caverock:androidsvg-aar:1.4")
     // Advanced Audio API uses one shared client for HTTP and WebSocket work.
-    // The legacy HttpURLConnection clients intentionally remain unchanged.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
     // JSONPath match/search must use a linear-time engine because workflows
     // may contain vendor-provided regular expressions.
     implementation("com.google.re2j:re2j:1.8")

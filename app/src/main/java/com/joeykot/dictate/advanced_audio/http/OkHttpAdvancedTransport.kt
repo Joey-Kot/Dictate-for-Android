@@ -6,6 +6,7 @@ import com.joeykot.dictate.advanced_audio.auth.RequestSigningException
 import com.joeykot.dictate.advanced_audio.auth.AwsSigV4Signer
 import com.joeykot.dictate.advanced_audio.auth.SigningHeaders
 import com.joeykot.dictate.advanced_audio.auth.SigningRequest
+import com.joeykot.dictate.network.AppHttpClient
 import okhttp3.FormBody
 import okhttp3.Headers
 import okhttp3.HttpUrl
@@ -362,7 +363,7 @@ class OkHttpAdvancedTransport(
         val JSON_MEDIA_TYPE: MediaType = "application/json; charset=utf-8".toMediaType()
         val EMPTY_REQUEST_BODY: RequestBody = ByteArray(0).toRequestBody()
 
-        fun newDefaultClient(): OkHttpClient = OkHttpClient.Builder()
+        fun newDefaultClient(): OkHttpClient = AppHttpClient.client.newBuilder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)

@@ -7,13 +7,17 @@ import com.joeykot.dictate.model.PromptConfig
 import com.joeykot.dictate.network.TranscriptionClient.FailureKind
 import com.joeykot.dictate.network.TranscriptionClient.Result
 import com.joeykot.dictate.util.Diagnostics
+import okhttp3.Call
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.RequestBody
+import okhttp3.Response
+import okio.BufferedSink
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.ConnectException
-import java.net.HttpURLConnection
 import java.net.NoRouteToHostException
-import java.net.SocketTimeoutException
-import java.net.URL
 import java.net.UnknownHostException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -22,10 +26,13 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLException
 
-class PostProcessingClient(private val diagnostics: Diagnostics) {
+class PostProcessingClient(
+    private val diagnostics: Diagnostics,
+    private val httpClient: OkHttpClient = AppHttpClient.client,
+) {
     private enum class Phase { CONNECTING, WRITING, READING }
 
-    private val activeConnection = AtomicReference<HttpURLConnection?>()
+    private val activeConnection = AtomicReference<Call?>()
     private val cancellationVersion = AtomicLong()
 
     fun execute(
@@ -41,47 +48,50 @@ class PostProcessingClient(private val diagnostics: Diagnostics) {
         val startedAt = System.nanoTime()
         var phase = Phase.CONNECTING
         val writeTimedOut = AtomicBoolean(false)
-        var connection: HttpURLConnection? = null
+        var connection: Call? = null
+        var httpResponse: Response? = null
         var cancellationWatch: java.util.concurrent.ScheduledFuture<*>? = null
         return try {
             val request = PostProcessingRequest.build(config, apiKey, prompt, input)
             val body = request.body.toString().toByteArray(Charsets.UTF_8)
-            val opened = (URL(request.endpoint).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doInput = true
-                doOutput = true
-                useCaches = false
-                instanceFollowRedirects = false
-                connectTimeout = CONNECT_TIMEOUT_MS
-                readTimeout = READ_TIMEOUT_MS
-                setRequestProperty("Accept", "application/json, text/event-stream")
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                request.headers.forEach { (name, value) -> setRequestProperty(name, value) }
-                setFixedLengthStreamingMode(body.size)
+            val upload = object : RequestBody() {
+                override fun contentType() = "application/json; charset=utf-8".toMediaType()
+                override fun contentLength() = body.size.toLong()
+                override fun isOneShot() = true
+                override fun writeTo(sink: BufferedSink) {
+                    if (cancelled()) throw RequestCancelledException()
+                    phase = Phase.WRITING
+                    val timeout = watchdog.schedule({
+                        writeTimedOut.set(true)
+                        connection?.cancel()
+                    }, WRITE_TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS)
+                    try {
+                        sink.write(body)
+                        sink.flush()
+                    } finally {
+                        timeout.cancel(false)
+                    }
+                    phase = Phase.READING
+                }
             }
+            val httpRequest = okhttp3.Request.Builder().url(request.endpoint)
+                .header("Accept", "application/json, text/event-stream")
+                .apply { request.headers.forEach { (name, value) -> header(name, value) } }
+                .post(upload).build()
+            val opened = httpClient.newCall(httpRequest)
             connection = opened
             activeConnection.set(opened)
             if (cancelled()) return Result.Cancelled
             cancellationWatch = watchdog.scheduleWithFixedDelay(
-                { if (cancelled()) opened.disconnect() }, 100L, 100L, TimeUnit.MILLISECONDS,
+                { if (cancelled()) opened.cancel() }, 100L, 100L, TimeUnit.MILLISECONDS,
             )
-            opened.connect()
-            if (cancelled()) return Result.Cancelled
-            phase = Phase.WRITING
-            val timeout = watchdog.schedule(
-                { writeTimedOut.set(true); opened.disconnect() },
-                WRITE_TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS,
-            )
-            try {
-                opened.outputStream.use { output -> output.write(body) }
-            } finally {
-                timeout.cancel(false)
-            }
+            val received = opened.execute()
+            httpResponse = received
             if (cancelled()) return Result.Cancelled
             if (writeTimedOut.get()) return failure(FailureKind.WRITE_TIMEOUT, AppStrings.get(R.string.val_post_write_timeout, "Timed out sending the post-processing request"), true, startedAt, apiKey)
             phase = Phase.READING
-            val status = opened.responseCode
-            val response = readResponse(opened, status) {
+            val status = received.code
+            val response = readResponse(received) {
                 if (cancelled()) throw RequestCancelledException()
             }
             if (cancelled()) return Result.Cancelled
@@ -92,7 +102,7 @@ class PostProcessingClient(private val diagnostics: Diagnostics) {
                 diagnostics.error("post-http", "status=$status elapsed=${elapsed}ms retryable=$retryable response=$summary")
                 Result.Failure(FailureKind.HTTP, AppStrings.get(R.string.val_post_http, "The post-processing service returned HTTP %1\$d", status), retryable, status, elapsed, summary)
             } else {
-                val isEventStream = opened.contentType?.startsWith("text/event-stream", ignoreCase = true) == true ||
+                val isEventStream = received.header("Content-Type")?.startsWith("text/event-stream", ignoreCase = true) == true ||
                     response.trimStart().let { it.startsWith("data:") || it.startsWith("event:") || it.startsWith(":") }
                 val text = if (isEventStream) PostProcessingStream.parseText(config.provider, response)
                     else PostProcessingRequest.parseText(config.provider, response)
@@ -111,7 +121,7 @@ class PostProcessingClient(private val diagnostics: Diagnostics) {
                     is IllegalArgumentException -> Triple(FailureKind.CONFIGURATION, error.message ?: AppStrings.get(R.string.val_post_config_invalid, "Invalid post-processing configuration"), false)
                     is PostProcessingStream.ServiceException -> Triple(FailureKind.SERVICE, error.message ?: AppStrings.get(R.string.val_post_stream_error, "Post-processing service streaming error"), error.retryable)
                     is PostProcessingRequest.InvalidResponseException -> Triple(FailureKind.INVALID_RESPONSE, error.message ?: AppStrings.get(R.string.val_post_response_invalid, "Invalid post-processing response"), false)
-                    is SocketTimeoutException -> when (phase) {
+                    is InterruptedIOException -> when (phase) {
                         Phase.CONNECTING -> Triple(FailureKind.CONNECT_TIMEOUT, AppStrings.get(R.string.val_post_connect_timeout, "Timed out connecting to the post-processing service"), true)
                         Phase.WRITING -> Triple(FailureKind.WRITE_TIMEOUT, AppStrings.get(R.string.val_post_write_timeout, "Timed out sending the post-processing request"), true)
                         Phase.READING -> Triple(FailureKind.READ_TIMEOUT, AppStrings.get(R.string.val_post_read_timeout, "Timed out waiting for the post-processing response"), true)
@@ -128,17 +138,18 @@ class PostProcessingClient(private val diagnostics: Diagnostics) {
         } finally {
             cancellationWatch?.cancel(false)
             activeConnection.compareAndSet(connection, null)
-            connection?.disconnect()
+            httpResponse?.close()
+            connection?.cancel()
         }
     }
 
     fun cancel() {
         cancellationVersion.incrementAndGet()
-        activeConnection.getAndSet(null)?.disconnect()
+        activeConnection.getAndSet(null)?.cancel()
     }
 
-    private fun readResponse(connection: HttpURLConnection, status: Int, checkCancelled: () -> Unit): String {
-        val stream = (if (status in 200..299) connection.inputStream else connection.errorStream) ?: return ""
+    private fun readResponse(response: Response, checkCancelled: () -> Unit): String {
+        val stream = response.body?.byteStream() ?: return ""
         return stream.use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(8 * 1024)
@@ -166,9 +177,7 @@ class PostProcessingClient(private val diagnostics: Diagnostics) {
     private class RequestCancelledException : IOException()
 
     private companion object {
-        const val CONNECT_TIMEOUT_MS = 15_000
         const val WRITE_TIMEOUT_MS = 30_000
-        const val READ_TIMEOUT_MS = 60_000
         const val MAX_RESPONSE_BYTES = 2 * 1024 * 1024
         val watchdog = Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "dictate-post-http-watchdog").apply { isDaemon = true }

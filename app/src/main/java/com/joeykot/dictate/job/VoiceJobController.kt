@@ -54,6 +54,7 @@ import com.joeykot.dictate.network.BaseUrl
 import com.joeykot.dictate.network.SegmentedUploadBatchRunner
 import com.joeykot.dictate.network.TranscriptionClient
 import com.joeykot.dictate.network.PostProcessingClient
+import com.joeykot.dictate.network.dns.AppDns
 import com.joeykot.dictate.settings.SettingsRepository
 import com.joeykot.dictate.ui.MainActivity
 import com.joeykot.dictate.util.AudioFileStore
@@ -95,6 +96,7 @@ class VoiceJobController(
     private val settingsRepository: SettingsRepository,
     private val fileStore: AudioFileStore,
     private val diagnostics: Diagnostics,
+    private val onTranscriptionCompleted: () -> Unit = AppDns::onTranscriptionCompleted,
 ) {
     fun interface Listener {
         fun onStateChanged(state: JobUiState)
@@ -2306,6 +2308,11 @@ class VoiceJobController(
         if (job.mode.connectionTest) job.rawFile?.delete()
         activeJob = null
         updateUi(null, JobState.IDLE) { AppStrings.get(R.string.runtime_idle, "Idle") }
+        if (job.mode == JobMode.VOICE) {
+            runCatching { onTranscriptionCompleted() }.onFailure {
+                diagnostics.info("dns", "refresh_notification_failed kind=${it.javaClass.simpleName}")
+            }
+        }
         if (testResult != null) job.testCallback?.invoke(testResult)
     }
 
