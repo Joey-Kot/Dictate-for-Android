@@ -1,10 +1,43 @@
-English | [简体中文](README_ZH.md)
+[English](README.md) | [简体中文](README_ZH.md)
 
-# Dictate
+# Dictate for Android
 
-Dictate is an Android speech-transcription and selected-text post-processing tool operated through a non-focus-stealing accessibility floating button. Audio and selected text are sent directly to endpoints configured by the user, with one task executed at a time. Transcription and post-processing share the same insertion rule: if there is no selection when the result is inserted, it is inserted at the current cursor; if there is an editable selection, that text is replaced.
+[<img src="demo/Demo-EN.gif" alt="Dictate Operation Demonstration" width="320">](demo/Demo-EN.gif)
 
-## Download
+**Speak and type instantly; select text and summon AI at your fingertips.**
+
+Dictate for Android is a voice input and text rewriting tool that works alongside your existing keyboard. Use the floating button to start voice input (start/end/pause/resume/cancel/retry), or select text and long-press the floating button to expand it into a floating menu, where you can choose a prompt and have AI process the text as requested.
+
+It supports multiple ways to connect to speech and text APIs and can even **generate custom speech Providers that connect directly to vendors based on their API documentation and your requirements**. Everything from audio encoding and speech segmentation to prompts, API parameters, and network requests can be configured to suit your needs.
+
+## Voice typing: From microphone to text, configured your way
+
+Audio is captured at the default microphone’s native sample rate, then converted to the desired format. The audio format and encoding are configurable, covering essentially all encodings supported by FFmpeg.
+
+Transcription supports two connection methods:
+
+- **Audio API-compatible:** Use an OpenAI-style transcription endpoint, specify the full API URL, customize the text field in the returned JSON, and add nested JSON parameters.
+- **AI-powered speech Provider generator:** Paste a vendor’s API documentation and enter the parameters and features you need. AI then generates a custom Provider that connects directly to the vendor’s endpoint. Generation uses the API configured for text rewriting.
+
+Audio processing supports length-based segmentation using PCM analysis and concurrent transcription, enabling transcription without a duration limit. Both speech API options support these features.
+
+## Text rewriting: Unlimited prompts, connected to different models
+
+After selecting text, long-press the floating button to expand it into a floating menu and choose the prompt you want to use.
+
+You can configure an unlimited number of prompts. Each prompt can have its own icon, title, content, and additional JSON parameters. It can use the main Provider or a separately specified Provider, letting different tasks use different vendors or models.
+
+The text API supports **15 vendors and 25 API endpoints**, including Chat Completions, Responses, and endpoints from Anthropic, Gemini, and others. Choose prompt icons from 25 built-in options, or import PNG, JPG, or SVG files.
+
+## Use it your way
+
+- **Clipboard Fallback by Default**: Transcribed content is copied to the clipboard as a backup by default. When disabled, it is copied to the clipboard only if writing to the text field fails.
+- **API Parameters**: Both speech and text APIs support additional nested JSON parameters for using advanced vendor features.
+- **Caching and Resending**: Long-press to resend the previous voice transcription without having to repeat yourself.
+- **Automatic Retries**: Configure automatic retries, the number of retries, and other options.
+- **Custom Styling**: Adjust the timing for double-tap and long-press actions, as well as the floating button’s color, size, and opacity.
+
+## Downloads
 
 | Platform | Download | SHA-256 |
 |---|---|---|
@@ -30,30 +63,7 @@ Dictate is an Android speech-transcription and selected-text post-processing too
 | [![Remote audio configuration](demo/16.%20Configurable%20cloud%20storage%20or%20WebDAV.png)](demo/16.%20Configurable%20cloud%20storage%20or%20WebDAV.png) | [![Successful workflow endpoint test](demo/17.%20Successfully%20tested%20the%20workflow%20API.png)](demo/17.%20Successfully%20tested%20the%20workflow%20API.png) |  |
 | **16. Remote audio configuration**<br>When audio must be delivered through a public URL or cloud URI, configure WebDAV, S3-compatible storage, or Alibaba Cloud OSS. | **17. Workflow endpoint test**<br>Test the real endpoint using the current workflow draft and its declared values and secrets. |  |
 
-## Speech-transcription features
-
-- **Recording and transcription**: A non-IME floating button records and transcribes audio without taking focus. It supports pause, cancel, retrying the most recent recording, and use with the screen off.
-- **Text rewriting**: Configure prompts with different providers, models, and parameters, then long-press the floating button after selecting text to choose an action.
-- **Custom APIs**: Configure a regular OpenAI-compatible-style audio API plus provider-specific Rewrite APIs, models, prompts, and extra request parameters.
-- **Advanced custom Audio API providers**: Generate and validate declarative ASR-provider workflows from separate user requirements and vendor documentation. Workflows provide typed, conditionally visible, single-select, and multi-select controls, and support single requests, streamed responses, asynchronous polling, and real-time WebSocket transcription.
-- **Segmented uploads**: Optionally split long non-real-time ASR tasks into independent local batches. Segments are based on pauses in raw PCM amplitude without removing silence; FFmpeg exports complete media files sequentially, then recognition workflows run with bounded concurrency. This supports regular OpenAI-compatible transcription and Advanced non-real-time workflows, but not real-time transcription or Rewrite.
-- **Visible ASR failures**: ASR request failures after all retries are exhausted are logged as brief, redacted placeholders. No placeholder is logged if the transcription itself is empty, meaning no valid characters were recognized.
-- **Automatic insertion**: Transcription and rewrite results are inserted at the current cursor or replace the current editable selection. A clipboard copy of the result is kept by default; when disabled, the clipboard is used only as a fallback after a confirmed insertion failure.
-- **Audio processing**: Select recording and output formats; embedded FFmpeg requires no separate installation.
-- **Local concurrent segmented uploads**: Analyze silence from audio amplitude, prefer pauses as boundaries while preserving the full audio timeline, export independent media segments, and submit them to the ASR API with bounded concurrency.
-- **Task and configuration safety**: Transcoding, network requests, and retries are cancellable. API keys, workflows, and remote-storage secrets are encrypted through Android Keystore, with redacted diagnostics, real endpoint tests, and validated JSON import/export.
-
-### Selected-text post-processing features
-
-- **Selection action menu**: Long-press the idle floating button after selecting text to expand the prompt list, then tap an item to run it. Without selected text or saved prompts, long-press continues to resubmit the most recent recording.
-- **Independent service configuration**: Configure Provider, Base URL, API Key, and Model separately in **Rewrite API Settings**. There are 25 built-in Rewrite providers; see [Post-processing configuration](#post-processing-configuration) for request formats, endpoint completion, and authentication.
-- **Per-prompt provider selection**: **Same as Main Provider** is the default and inherits the complete Rewrite API configuration. A prompt can also use its own Provider, Base URL, API Key, and Model, and test the connection before saving.
-- **Custom prompts and icons**: Each item has an icon, title, actual prompt, and independent extra JSON. Items can be added, edited, deleted, and reordered. 25 built-in two-tone blue icons are available, and SVG, PNG, and JPG can be imported.
-- **Per-prompt model and parameter overrides**: A prompt's extra JSON can override the selected API's Model and other request fields. Nested objects merge recursively, arrays are replaced as a whole, other values override directly, and object members explicitly set to `null` are deleted from the request.
-- **On-demand text processing**: Use your own prompts for polishing, rewriting, translation, summarization, and more. These user-configured actions work on existing text or transcription results without starting a new recording.
-- **Shared insertion and task control**: Post-processing and transcription share the processing state, double-tap cancellation, and automatic retry. Results are inserted or replace text using the focus and selection that exist when insertion occurs; post-processing completion, failure, or cancellation never replaces the previous recording.
-
-### Floating-button controls
+## Floating-button controls
 
 | State | Tap | Long press | Quick double tap |
 |---|---|---|---|
