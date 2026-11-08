@@ -45,10 +45,6 @@ The text API supports **15 vendors and 25 API endpoints**, including Chat Comple
 
 ## Demonstration and configuration
 
-| [<img src="demo/Demo-ZH.gif" alt="Dictate Chinese usage demo" width="320">](demo/Demo-ZH.gif) |
-| :---: |
-| **Usage**<br>Record and transcribe with the floating button, then select text and use custom prompts to rewrite, translate, and perform other actions. |
-
 | [![Permissions](demo/1.%20Permissions.png)](demo/1.%20Permissions.png) | [![UI language](demo/2.%20UI%20language.png)](demo/2.%20UI%20language.png) | [![Audio recording settings](demo/3.%20Audio%20Record%20Settings.png)](demo/3.%20Audio%20Record%20Settings.png) |
 | :---: | :---: | :---: |
 | **1. Permissions**<br>Enable the accessibility service and grant microphone permission. | **2. UI language**<br>English, Chinese, Japanese, German, French, and Russian are supported; the selected language takes effect after saving. | **3. Recording settings**<br>Choose the output sample rate, codec, container, and bitrate. |
