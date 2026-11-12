@@ -80,6 +80,8 @@ The prompt menu is a vertically scrollable, rounded, translucent panel that expa
 
 ## Building from source
 
+Set `appVersionName` in `app/build.gradle.kts` when releasing a new version. Local builds and GitHub Actions use this fixed value.
+
 See [AGENTS.md](AGENTS.md) for details.
 
 ## Usage

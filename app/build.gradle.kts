@@ -6,11 +6,19 @@ val releaseStoreFile = providers.environmentVariable("ANDROID_KEYSTORE_PATH").or
 val releaseStorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orNull
 val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orNull
 val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull
-val configuredVersionCode = providers.environmentVariable("DICTATE_VERSION_CODE").orNull
-    ?.toIntOrNull()
-    ?: 1
-val configuredVersionName = providers.environmentVariable("DICTATE_VERSION_NAME").orNull
-    ?: "0.1.0"
+
+// Update this version for each release; CI and local builds use the same value.
+val appVersionName = "1.0.0"
+val versionParts = appVersionName.split(".").map { it.toIntOrNull() }
+require(versionParts.size == 3 && versionParts.all { it != null }) {
+    "appVersionName must use the numeric major.minor.patch format."
+}
+val (majorVersion, minorVersion, patchVersion) = versionParts.map { it!! }
+require(majorVersion in 0..2099 && minorVersion in 0..999 && patchVersion in 0..999) {
+    "appVersionName components must be within 0..2099, 0..999, and 0..999."
+}
+val appVersionCode = majorVersion * 1_000_000 + minorVersion * 1_000 + patchVersion
+require(appVersionCode > 0) { "appVersionName must be greater than 0.0.0." }
 
 android {
     namespace = "com.joeykot.dictate"
@@ -21,8 +29,8 @@ android {
         applicationId = "com.joeykot.dictate"
         minSdk = 26
         targetSdk = 35
-        versionCode = configuredVersionCode
-        versionName = configuredVersionName
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         ndk {
             abiFilters += setOf("arm64-v8a")

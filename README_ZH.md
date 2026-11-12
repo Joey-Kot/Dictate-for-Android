@@ -80,6 +80,8 @@ Dictate for Android 是一款与你现有键盘配合使用的语音输入和文
 
 ## 从源码构建
 
+发布新版本时，修改 `app/build.gradle.kts` 中的 `appVersionName`。本地构建和 GitHub Actions 都使用这个固定版本号。
+
 详情请参考 [AGENTS.md](AGENTS.md)。
 
 ## 使用方法
