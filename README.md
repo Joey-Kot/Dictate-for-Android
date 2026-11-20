@@ -106,15 +106,15 @@ Advanced Audio API is an optional, constrained declarative ASR workflow. Once co
 For non-real-time streaming models, configure optional segmented uploads for APIs with duration limits.
 
 - Strict segmentation: Split at the valid pause ending closest to the limit. Each segment is exported as an independent media file; if no pause exists, a hard cut is used.
-- No modification: Other than the required split truncation, speech on the original timeline is not modified.
+- With VAD enabled, the app first joins the detected speech ranges from the original audio, then finds segment boundaries on that shorter timeline. With VAD off, segmentation covers the entire recording.
 
 ### VAD Settings
 
 You can enable “Voice Activity Detection (VAD)” in “Recording Settings.”
 
-- Before uploading the full recording, the app detects speech segments at 16 kHz, cuts and joins those segments from the original recording at its original sample rate, then encodes the result according to the output settings.
+- Before encoding or splitting the recording, the app detects speech segments at 16 kHz, cuts and joins those segments from the original recording at its original sample rate, then encodes the result according to the output settings.
 - Boundary padding defaults to 100 milliseconds (0–1000), and the activation threshold defaults to 0.6 (0.5–1.0). If no speech is detected, the upload is skipped and the original recording is retained. You can adjust the parameters and transcribe it again.
-- If manually resending or automatically retrying requires the audio to be uploaded again, the app reruns detection on the original recording. Chunked uploads and real-time transcription use the full timeline.
+- Manual resend starts from the retained original PCM using current settings. An automatic segment retry reuses its encoded file. The app discards temporary audio and all segments when the batch finishes or is canceled. Realtime transcription uses the full recording.
 
 ### Audio encoding settings
 

@@ -117,7 +117,7 @@
     <string name="vad_enabled">Détection de la voix (VAD)</string>
     <string name="vad_padding">Marge VAD (ms)</string>
     <string name="vad_threshold">Seuil de déclenchement VAD</string>
-    <string name="vad_help">Lors de l’envoi en un seul fichier, les portions sans parole sont retirées de l’enregistrement original. Les envois segmentés et les sessions en temps réel utilisent tout l’audio.</string>
+    <string name="vad_help">Pour la transcription en différé, les passages parlés sont extraits avant l’encodage ou le découpage. La transcription en temps réel utilise tout l’enregistrement.</string>
     <string name="vad_invalid_padding">La marge VAD doit être comprise entre 0 et 1000 ms</string>
     <string name="vad_invalid_threshold">Le seuil VAD doit être compris entre 0,5 et 1,0</string>
     <string name="vad_failed">Échec de la préparation audio avec la VAD : %1$s</string>

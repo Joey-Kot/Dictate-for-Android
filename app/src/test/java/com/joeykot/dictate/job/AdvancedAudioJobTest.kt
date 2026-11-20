@@ -9,10 +9,6 @@ import com.joeykot.dictate.advanced_audio.http.AdvancedCancellationSource
 import com.joeykot.dictate.advanced_audio.realtime.RealtimeSessionException
 import com.joeykot.dictate.audio.AudioEncodingPlan
 import com.joeykot.dictate.audio.PreparedSegmentedUpload
-import com.joeykot.dictate.audio.SegmentPlan
-import com.joeykot.dictate.audio.SegmentedUploadParameters
-import com.joeykot.dictate.audio.SegmentedUploadSnapshot
-import com.joeykot.dictate.audio.SourceInterval
 import com.joeykot.dictate.model.AdvancedAudioConfig
 import com.joeykot.dictate.model.AppSettings
 import com.joeykot.dictate.model.AudioConfig
@@ -233,11 +229,16 @@ class AdvancedAudioJobTest {
         ))
         assertEquals("POST /advanced HTTP/1.1", requestLines.last())
         assertEquals(2, requestCount.get())
-        resend(settings.copy(segmentedUpload = SegmentedUploadConfig(enabled = true)))
+        val segmented = settings.copy(segmentedUpload = SegmentedUploadConfig(enabled = true))
+        resend(segmented)
+        assertEquals(2, requestCount.get())
+        resend(segmented.copy(vad = VadConfig(enabled = true)))
         assertEquals(3, requestCount.get())
-        assertNotNull(store.lastRecordingSegmentedUploadSnapshot(recording))
+        resend(segmented.copy(vad = VadConfig()))
+        assertEquals(4, requestCount.get())
         resend(settings)
         assertEquals(4, requestCount.get())
+        assertTrue(store.segmentedUploadTemporaryRoot().listFiles().orEmpty().isEmpty())
         assertTrue(original.contentEquals(recording.file.readBytes()))
     }
 
@@ -278,6 +279,40 @@ class AdvancedAudioJobTest {
                     assertTrue(requestBodyLengths[before + 1] > requestBodyLengths[before])
                 }
             }
+        }
+    }
+
+    @Test
+    fun vadSegmentRetryUsesItsEncodedFileAndManualResendRereadsTheOriginal() = withVadAudio {
+        val store = application.audioFileStore
+        val source = store.newRawFile(1010).also { ConnectivityTestAudio.writeTo(application, it) }
+        val recording = checkNotNull(store.promoteToLast(source, Pcm16Format.LEGACY_MONO_16_KHZ))
+        val original = recording.file.readBytes()
+        for (advanced in listOf(false, true)) {
+            recording.file.writeBytes(original)
+            val settings = AppSettings(
+                audio = AudioConfig(codec = AudioCodec.PCM, container = AudioContainer.S16LE, bitDepth = 16, sampleRate = 16000),
+                provider = ProviderConfig(baseUrl = "http://127.0.0.1:${server.localPort}", model = "test"),
+                advancedAudio = AdvancedAudioConfig(enabled = advanced, workflowJson = requestWorkflow()),
+                vad = VadConfig(enabled = true), segmentedUpload = SegmentedUploadConfig(enabled = true),
+                retry = RetryConfig(enabled = true, maxRetries = 1, initialBackoffSeconds = 0.1),
+            )
+            executor("worker").submit { application.settingsRepository.save(settings, "test-key") }.get()
+            val before = requestCount.get()
+            onRequest = { socket ->
+                if (requestCount.get() == before + 1) {
+                    recording.file.writeBytes(ByteArray(original.size))
+                    socket.reply(503, "try again")
+                } else socket.reply(200, """{"text":""}""")
+            }
+            controller.handleLongPress(JobState.IDLE)
+            await { controller.currentState().state == JobState.IDLE }
+            assertEquals(before + 2, requestCount.get())
+            assertTrue(store.segmentedUploadTemporaryRoot().listFiles().orEmpty().isEmpty())
+            controller.handleLongPress(JobState.IDLE)
+            await { controller.currentState().state == JobState.IDLE }
+            assertEquals(before + 2, requestCount.get())
+            assertEquals("No speech detected", controller.currentState().message)
         }
     }
 
@@ -621,14 +656,8 @@ class AdvancedAudioJobTest {
         val directory = java.nio.file.Files.createTempDirectory("job-empty-segments-").toFile()
         val upload = PreparedSegmentedUpload(
             directory = directory,
-            snapshot = SegmentedUploadSnapshot(
-                SegmentedUploadParameters(1, 100, 1),
-                SegmentPlan(16_000, responses.size.toLong(), 16_000, responses.indices.map {
-                    SourceInterval(it.toLong(), it.toLong() + 1)
-                }),
-            ),
+            maxConcurrency = 1,
             files = responses.indices.map { File(directory, "$it.wav").apply { writeBytes(byteArrayOf(1, 2)) } },
-            operationIds = responses.indices.map(Int::toLong),
         )
         val client = VoiceJobController::class.java.getDeclaredField("client")
             .apply { isAccessible = true }.get(controller) as TranscriptionClient

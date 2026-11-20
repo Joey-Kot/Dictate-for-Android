@@ -32,89 +32,6 @@ class AudioFileStore(context: Context) {
         .filter { isValidRaw(it.file, it.format) }
         .maxByOrNull { it.file.lastModified() }
 
-    /**
-     * Returns the persisted segmented-upload snapshot for [recording], if one
-     * belongs to the current "last recording" PCM file.  The protocol layer
-     * owns the JSON schema; this store deliberately treats it as opaque text
-     * so a recording can retain its frozen source-frame partition across
-     * process restarts without coupling storage to an execution implementation.
-     */
-    @Synchronized
-    fun lastRecordingSegmentedUploadSnapshot(recording: RawRecording): String? {
-        if (!isLastRecordingFile(recording.file) || !isValidRaw(recording.file, recording.format)) return null
-        val sidecar = segmentedUploadSnapshotFile(recording.file)
-        if (!sidecar.exists()) return null
-        if (!sidecar.isFile || sidecar.length() !in 1L..MAX_SEGMENTED_UPLOAD_SNAPSHOT_BYTES) {
-            sidecar.delete()
-            return null
-        }
-        return try {
-            sidecar.readText(Charsets.UTF_8).takeIf { it.isNotBlank() } ?: run {
-                sidecar.delete()
-                null
-            }
-        } catch (_: Exception) {
-            sidecar.delete()
-            null
-        }
-    }
-
-    /**
-     * Atomically associates an opaque frozen segmented-upload snapshot with
-     * the current last recording.  A new microphone recording removes this
-     * sidecar during [promoteToLast], so a plan can never be reused for a
-     * different PCM timeline that happens to share its sample-rate filename.
-     */
-    @Synchronized
-    fun saveLastRecordingSegmentedUploadSnapshot(recording: RawRecording, snapshot: String): Boolean {
-        if (!isLastRecordingFile(recording.file) || !isValidRaw(recording.file, recording.format) || snapshot.isBlank()) {
-            return false
-        }
-        val bytes = snapshot.toByteArray(Charsets.UTF_8)
-        if (bytes.size > MAX_SEGMENTED_UPLOAD_SNAPSHOT_BYTES) return false
-
-        val destination = segmentedUploadSnapshotFile(recording.file)
-        val staging = File(recordingsDir, "${destination.name}.new")
-        return try {
-            staging.writeBytes(bytes)
-            moveReplacing(staging, destination)
-            true
-        } catch (_: Exception) {
-            staging.delete()
-            false
-        }
-    }
-
-    /**
-     * Removes a persisted snapshot only when it still contains [expectedSnapshot].
-     *
-     * Decoding happens outside this store, so the controller passes back the
-     * opaque bytes it read after finding a malformed or stale plan.  Checking
-     * those bytes while synchronized with [saveLastRecordingSegmentedUploadSnapshot]
-     * prevents an old reader from deleting a newer atomically-published plan.
-     */
-    @Synchronized
-    fun clearLastRecordingSegmentedUploadSnapshotIfUnchanged(
-        recording: RawRecording,
-        expectedSnapshot: String,
-    ): Boolean {
-        if (!isLastRecordingFile(recording.file) || expectedSnapshot.isBlank()) return false
-        val sidecar = segmentedUploadSnapshotFile(recording.file)
-        if (!sidecar.exists()) return false
-        if (!sidecar.isFile || sidecar.length() !in 1L..MAX_SEGMENTED_UPLOAD_SNAPSHOT_BYTES) {
-            return sidecar.delete()
-        }
-        return try {
-            if (sidecar.readText(Charsets.UTF_8) != expectedSnapshot) {
-                false
-            } else {
-                sidecar.delete()
-            }
-        } catch (_: Exception) {
-            sidecar.delete()
-        }
-    }
-
     fun isValidRaw(file: File, format: Pcm16Format): Boolean =
         file.isFile && file.length() >= format.minimumBytesFor(MIN_VALID_DURATION_MILLIS)
 
@@ -134,7 +51,6 @@ class AudioFileStore(context: Context) {
             staging.delete()
             throw error
         }
-        segmentedUploadSnapshotFile(destination).delete()
         removeOtherLastRecordings(destination)
         rawFile.delete()
         return RawRecording(destination, format)
@@ -152,9 +68,9 @@ class AudioFileStore(context: Context) {
         recordingsDir.listFiles()
             ?.filter { it.name.endsWith(".new") && it.name.startsWith(LAST_RECORDING_PREFIX) }
             ?.forEach { it.delete() }
+        // Older versions stored a plan alongside the retained PCM. Recompute it on each resend.
         recordingsDir.listFiles()
             ?.filter { it.name.endsWith(SEGMENTED_UPLOAD_SNAPSHOT_SUFFIX) }
-            ?.filter { sidecar -> !File(recordingsDir, sidecar.name.removeSuffix(SEGMENTED_UPLOAD_SNAPSHOT_SUFFIX)).isFile }
             ?.forEach { it.delete() }
     }
 
@@ -185,13 +101,9 @@ class AudioFileStore(context: Context) {
                 file.isFile && file.absolutePath != keeping.absolutePath && isLastRecordingFile(file)
             }
             ?.forEach { file ->
-                segmentedUploadSnapshotFile(file).delete()
                 file.delete()
             }
     }
-
-    private fun segmentedUploadSnapshotFile(recording: File): File =
-        File(recordingsDir, "${recording.name}$SEGMENTED_UPLOAD_SNAPSHOT_SUFFIX")
 
     private fun moveReplacing(staging: File, destination: File) {
         try {
@@ -214,11 +126,6 @@ class AudioFileStore(context: Context) {
         const val LAST_RECORDING_PREFIX = "last-recording"
         const val MIN_VALID_DURATION_MILLIS = 100L
         const val SEGMENTED_UPLOAD_SNAPSHOT_SUFFIX = ".segmented-upload.json"
-        // A user can deliberately select short positive segment lengths for
-        // a long recording, so a frame-range plan can contain thousands of
-        // entries. Keep the opaque sidecar bounded without silently losing a
-        // valid retry/retranscription plan in that supported configuration.
-        const val MAX_SEGMENTED_UPLOAD_SNAPSHOT_BYTES = 4L * 1024L * 1024L
         val LAST_RECORDING_PATTERN = Regex("^last-recording-(\\d+)hz-(\\d+)ch-s16le\\.pcm$")
     }
 }

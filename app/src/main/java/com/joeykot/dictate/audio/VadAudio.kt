@@ -28,7 +28,7 @@ internal object NativeVad {
     ): LongArray?
 }
 
-/** Whole-recording preparation, after the realtime and segmented routes have been selected. */
+/** Encode one complete upload from the retained recording. */
 internal fun AudioTranscoder.transcodeRecording(
     jobId: Long,
     original: File,
@@ -43,11 +43,33 @@ internal fun AudioTranscoder.transcodeRecording(
 
     var temporary: File? = null
     return try {
-        val source = inspectPcmSource(original, format)
         Files.deleteIfExists(output.toPath())
         val root = Files.createDirectories(output.absoluteFile.toPath().parent)
         val directory = Files.createTempDirectory(root, "vad-$jobId-").toFile()
         temporary = directory
+        when (val speech = selectSpeechPcm(jobId, original, format, directory, vad, cancelled)) {
+            is AudioTranscoder.Result.Success -> transcode(jobId, speech.output, format, output, plan, cancelled)
+            else -> speech
+        }
+    } catch (error: Exception) {
+        if (cancelled()) AudioTranscoder.Result.Cancelled else vadFailure(error)
+    } finally {
+        temporary?.deleteRecursively()
+    }
+}
+
+/** The caller owns directory and the selected PCM until encoding or segment export finishes. */
+internal fun AudioTranscoder.selectSpeechPcm(
+    jobId: Long,
+    original: File,
+    format: Pcm16Format,
+    directory: File,
+    vad: VadConfig,
+    cancelled: () -> Boolean,
+): AudioTranscoder.RecordingResult {
+    if (cancelled()) return AudioTranscoder.Result.Cancelled
+    return try {
+        val source = inspectPcmSource(original, format)
         val analysis = if (format == Pcm16Format.LEGACY_MONO_16_KHZ) original else {
             val pcm = File(directory, "analysis-16k.pcm")
             val analysisPlan = AudioEncodingPlan.resolve(
@@ -75,15 +97,13 @@ internal fun AudioTranscoder.transcodeRecording(
             }
             pcm
         }
-        transcode(jobId, selected, format, output, plan, cancelled)
+        AudioTranscoder.Result.Success(selected)
     } catch (_: CancellationException) {
         AudioTranscoder.Result.Cancelled
     } catch (error: LinkageError) {
         vadFailure(error)
     } catch (error: Exception) {
         if (cancelled()) AudioTranscoder.Result.Cancelled else vadFailure(error)
-    } finally {
-        temporary?.deleteRecursively()
     }
 }
 

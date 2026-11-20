@@ -89,9 +89,7 @@ class SegmentedUploadBatchRunner(
         execute: (Item<Input>) -> TaskResult<Failure>,
     ): Result<Failure> {
         if (items.isEmpty()) return Result.Empty
-        // Settings validation normally prevents this. Keep the dispatch
-        // boundary defensive because frozen retry metadata and direct callers
-        // must never turn an imported number into an unbounded thread pool.
+        // Validate here too, before sizing the worker pool from the supplied settings.
         if (maxConcurrency !in 1..SegmentedUploadConfig.MAX_CONCURRENCY) {
             return Result.InvalidConcurrency
         }

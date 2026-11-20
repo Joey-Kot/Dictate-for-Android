@@ -2,8 +2,6 @@ package com.joeykot.dictate.audio
 
 import com.joeykot.dictate.model.Pcm16Format
 import com.joeykot.dictate.model.SegmentedUploadConfig
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.nio.file.Files
@@ -12,11 +10,7 @@ import kotlin.math.abs
 import kotlin.math.log10
 import kotlin.math.pow
 
-/**
- * A half-open interval on the original PCM timeline, measured in frames per
- * channel. Segment planning deliberately never works in encoded packet or
- * wall-clock coordinates, so every original PCM frame can be preserved.
- */
+/** A half-open range of frames per channel in the PCM being analyzed or copied. */
 data class SourceInterval(
     val startFrame: Long,
     val endFrame: Long,
@@ -25,7 +19,7 @@ data class SourceInterval(
         get() = if (endFrame > startFrame) endFrame - startFrame else 0L
 }
 
-/** A frozen, contiguous partition of one PCM source recording. */
+/** A contiguous partition of the PCM selected for this attempt. */
 data class SegmentPlan(
     val sourceRateHz: Int,
     val totalFrames: Long,
@@ -36,11 +30,7 @@ data class SegmentPlan(
         validate()
     }
 
-    /**
-     * Verify the invariants required by a later export or retranscription.
-     * A frozen plan is intentionally independent from subsequently edited
-     * settings, but it must still describe this exact PCM frame timeline.
-     */
+    /** Verify that each frame belongs to exactly one segment. */
     fun validate() {
         require(sourceRateHz > 0) { "Segment plan source sample rate must be positive" }
         require(totalFrames > 0L) { "Segment plan must contain source frames" }
@@ -80,6 +70,7 @@ fun buildSegmentPlan(
     totalFrames: Long,
     maxSegmentFrames: Long,
     silenceIntervals: List<SourceInterval>,
+    speechConfirmed: Boolean = false,
 ): SegmentPlanOutcome {
     require(sourceRateHz > 0) { "Segment plan source sample rate must be positive" }
     require(totalFrames >= 0L) { "Segment plan source frame count must not be negative" }
@@ -87,7 +78,7 @@ fun buildSegmentPlan(
     if (totalFrames == 0L) return SegmentPlanOutcome.NoSpeech
 
     val silences = normalizeSilences(totalFrames, silenceIntervals)
-    if (silences.size == 1 && silences.single() == SourceInterval(0L, totalFrames)) {
+    if (!speechConfirmed && silences.singleOrNull() == SourceInterval(0L, totalFrames)) {
         return SegmentPlanOutcome.NoSpeech
     }
 
@@ -343,7 +334,7 @@ class PcmPauseAnalyzer : PcmPauseAnalysisProvider {
     }
 }
 
-/** Settings captured together with a plan so retries retain their original split contract. */
+/** Segmentation settings for one upload attempt. */
 data class SegmentedUploadParameters(
     val maximumSegmentLengthSeconds: Long,
     val minimumPauseDurationMillis: Long,
@@ -365,94 +356,6 @@ data class SegmentedUploadParameters(
             throw IllegalArgumentException("Maximum segment length is too large", error)
         }
     }
-}
-
-/** Serializable retry state for one preserved original recording. */
-data class SegmentedUploadSnapshot(
-    val parameters: SegmentedUploadParameters,
-    val plan: SegmentPlan,
-) {
-    init {
-        plan.validate()
-        require(parameters.maximumSegmentFrames(plan.sourceRateHz) == plan.maxSegmentFrames) {
-            "Frozen segment plan does not match its maximum length setting"
-        }
-    }
-}
-
-/** Stable sidecar representation for [SegmentedUploadSnapshot]. */
-object SegmentedUploadSnapshotCodec {
-    const val VERSION = 1
-
-    fun encode(snapshot: SegmentedUploadSnapshot): String = JSONObject().apply {
-        put("version", VERSION)
-        put("maximumSegmentLengthSeconds", snapshot.parameters.maximumSegmentLengthSeconds)
-        put("minimumPauseDurationMillis", snapshot.parameters.minimumPauseDurationMillis)
-        put("concurrency", snapshot.parameters.concurrency)
-        put("sourceRateHz", snapshot.plan.sourceRateHz)
-        put("totalFrames", snapshot.plan.totalFrames)
-        put("maxSegmentFrames", snapshot.plan.maxSegmentFrames)
-        put("segments", JSONArray().apply {
-            snapshot.plan.segments.forEach { segment ->
-                put(JSONObject().apply {
-                    put("startFrame", segment.startFrame)
-                    put("endFrame", segment.endFrame)
-                })
-            }
-        })
-    }.toString()
-
-    fun decode(value: String): SegmentedUploadSnapshot {
-        val root = JSONObject(value)
-        require(requiredInt(root, "version") == VERSION) { "Unsupported segmented upload snapshot version" }
-        val parameters = SegmentedUploadParameters(
-            maximumSegmentLengthSeconds = requiredLong(root, "maximumSegmentLengthSeconds"),
-            minimumPauseDurationMillis = requiredLong(root, "minimumPauseDurationMillis"),
-            concurrency = requiredInt(root, "concurrency"),
-        )
-        val intervals = requiredArray(root, "segments").let { items ->
-            List(items.length()) { index ->
-                val item = items.opt(index) as? JSONObject
-                    ?: throw IllegalArgumentException("Segmented upload snapshot segment $index must be an object")
-                SourceInterval(
-                    startFrame = requiredLong(item, "startFrame"),
-                    endFrame = requiredLong(item, "endFrame"),
-                )
-            }
-        }
-        return SegmentedUploadSnapshot(
-            parameters = parameters,
-            plan = SegmentPlan(
-                sourceRateHz = requiredInt(root, "sourceRateHz"),
-                totalFrames = requiredLong(root, "totalFrames"),
-                maxSegmentFrames = requiredLong(root, "maxSegmentFrames"),
-                segments = intervals,
-            ),
-        )
-    }
-
-    private fun requiredArray(root: JSONObject, key: String): JSONArray = root.opt(key) as? JSONArray
-        ?: throw IllegalArgumentException("Segmented upload snapshot $key must be an array")
-
-    private fun requiredLong(root: JSONObject, key: String): Long = when (val value = root.opt(key)) {
-        is Byte -> value.toLong()
-        is Short -> value.toLong()
-        is Int -> value.toLong()
-        is Long -> value
-        else -> throw IllegalArgumentException("Segmented upload snapshot $key must be an integer")
-    }
-
-    private fun requiredInt(root: JSONObject, key: String): Int {
-        val value = requiredLong(root, key)
-        require(value in Int.MIN_VALUE..Int.MAX_VALUE) { "Segmented upload snapshot $key is out of range" }
-        return value.toInt()
-    }
-}
-
-/** Select whether a preparation attempt analyzes a new recording or reuses frozen retry state. */
-sealed interface SegmentedUploadPlanSource {
-    data class Analyze(val parameters: SegmentedUploadParameters) : SegmentedUploadPlanSource
-    data class Frozen(val snapshot: SegmentedUploadSnapshot) : SegmentedUploadPlanSource
 }
 
 /** One independent FFmpeg conversion request generated from a segment range. */
@@ -519,26 +422,24 @@ data class SegmentedUploadPreparationRequest(
     val inputFormat: Pcm16Format,
     val encodingPlan: AudioEncodingPlan,
     val temporaryRoot: File,
-    val planSource: SegmentedUploadPlanSource,
+    val parameters: SegmentedUploadParameters,
     /**
      * Must return an ID unique across every concurrently active FFmpeg call,
      * not merely unique relative to the parent voice-job ID.
      */
     val operationIdForSegment: (Int) -> Long,
     val encoder: SegmentMediaEncoder,
+    val selectSpeech: ((directory: File) -> AudioTranscoder.RecordingResult)? = null,
     val cancellation: SegmentedUploadCancellation = SegmentedUploadCancellation.NONE,
-    /** Called exactly once for a newly analyzed plan, before its first export. */
-    val onPlanFrozen: ((SegmentedUploadSnapshot) -> Unit)? = null,
-    /** Called before the first export for new and frozen plans alike. */
+    /** Called before encoding starts. */
     val onOperationsPlanned: ((List<Long>) -> Unit)? = null,
 )
 
 /** Files for one batch of independent, complete upload requests. */
 data class PreparedSegmentedUpload(
     val directory: File,
-    val snapshot: SegmentedUploadSnapshot,
+    val maxConcurrency: Int,
     val files: List<File>,
-    val operationIds: List<Long>,
 ) {
     /** Remove all temporary raw slices and encoded media from this one attempt. */
     fun cleanup() {
@@ -554,7 +455,7 @@ sealed interface SegmentedUploadPreparationResult {
 }
 
 /**
- * Analyze a raw PCM recording (unless retry state already froze a plan), copy
+ * Analyze the PCM selected for this attempt, copy
  * exact source-frame ranges to temporary PCM files, then encode each slice as
  * a standalone uploadable media file. Export is intentionally sequential: the
  * configured concurrency belongs to complete recognition workflows, not to
@@ -567,29 +468,31 @@ class SegmentedUploadPreparer(
         var directory: File? = null
         return try {
             throwIfCancelled(request.cancellation)
-            val source = inspectPcmSource(request.rawInput, request.inputFormat)
-            val snapshot = resolveSnapshot(request, source)
-                ?: return SegmentedUploadPreparationResult.NoSpeech
-            validateSnapshotForSource(snapshot, request.inputFormat, source)
-            throwIfCancelled(request.cancellation)
-
-            val operationIds = snapshot.plan.segments.indices.map(request.operationIdForSegment)
-            require(operationIds.size == operationIds.toSet().size) {
-                "Segment export operation IDs must be unique within one upload batch"
-            }
-            request.onOperationsPlanned?.invoke(operationIds)
-            throwIfCancelled(request.cancellation)
-
             require(request.temporaryRoot.isDirectory || request.temporaryRoot.mkdirs()) {
                 "Unable to create the segmented upload temporary directory"
             }
             directory = Files.createTempDirectory(request.temporaryRoot.toPath(), TEMP_DIRECTORY_PREFIX).toFile()
-            val files = ArrayList<File>(snapshot.plan.segments.size)
-            snapshot.plan.segments.forEachIndexed { index, interval ->
+            val input = when (val speech = request.selectSpeech?.invoke(directory)) {
+                null -> request.rawInput
+                is AudioTranscoder.Result.Success -> speech.output
+                AudioTranscoder.RecordingResult.NoSpeech -> return SegmentedUploadPreparationResult.NoSpeech
+                AudioTranscoder.Result.Cancelled -> return SegmentedUploadPreparationResult.Cancelled
+                is AudioTranscoder.Result.Failure -> return SegmentedUploadPreparationResult.Failure(speech.message)
+            }
+            throwIfCancelled(request.cancellation)
+            val source = inspectPcmSource(input, request.inputFormat)
+            val plan = planSegments(request, input, source) ?: return SegmentedUploadPreparationResult.NoSpeech
+            val operationIds = plan.segments.indices.map(request.operationIdForSegment)
+            require(operationIds.size == operationIds.toSet().size) {
+                "Segment export operation IDs must be unique within one upload batch"
+            }
+            request.onOperationsPlanned?.invoke(operationIds)
+            val files = ArrayList<File>(plan.segments.size)
+            plan.segments.forEachIndexed { index, interval ->
                 throwIfCancelled(request.cancellation)
                 val rawSegment = File(directory, "segment-${index.toString().padStart(6, '0')}.pcm")
                 copyPcmIntervals(
-                    sourceFile = request.rawInput,
+                    sourceFile = input,
                     source = source,
                     inputFormat = request.inputFormat,
                     intervals = sequenceOf(interval),
@@ -614,7 +517,7 @@ class SegmentedUploadPreparer(
                         require(media.isFile && media.length() > 0L) {
                             "Segment encoder reported success without producing segment ${index + 1}"
                         }
-                        rawSegment.delete()
+                        Files.delete(rawSegment.toPath())
                         files += media
                     }
                     is SegmentMediaEncodeResult.Failure -> {
@@ -624,73 +527,48 @@ class SegmentedUploadPreparer(
                 }
             }
             throwIfCancelled(request.cancellation)
+            if (input != request.rawInput) Files.delete(input.toPath())
             SegmentedUploadPreparationResult.Success(
                 PreparedSegmentedUpload(
                     directory = requireNotNull(directory),
-                    snapshot = snapshot,
+                    maxConcurrency = request.parameters.concurrency,
                     files = files,
-                    operationIds = operationIds,
                 ),
-            )
+            ).also { directory = null } // The batch now owns the encoded files.
         } catch (_: SegmentedUploadCancellationException) {
-            directory?.deleteRecursively()
             SegmentedUploadPreparationResult.Cancelled
         } catch (_: CancellationException) {
-            directory?.deleteRecursively()
             SegmentedUploadPreparationResult.Cancelled
         } catch (error: Exception) {
-            directory?.deleteRecursively()
             SegmentedUploadPreparationResult.Failure(error.message ?: error.javaClass.simpleName)
+        } finally {
+            directory?.deleteRecursively()
         }
     }
 
-    private fun resolveSnapshot(
+    private fun planSegments(
         request: SegmentedUploadPreparationRequest,
+        input: File,
         source: PcmSource,
-    ): SegmentedUploadSnapshot? = when (val planSource = request.planSource) {
-        is SegmentedUploadPlanSource.Frozen -> planSource.snapshot
-        is SegmentedUploadPlanSource.Analyze -> {
+    ): SegmentPlan? {
+        val rate = request.inputFormat.sampleRateHz
+        val maxFrames = request.parameters.maximumSegmentFrames(rate)
+        val speechConfirmed = request.selectSpeech != null
+        val pauses = if (speechConfirmed && source.totalFrames <= maxFrames) {
+            emptyList()
+        } else {
             val analysis = pauseAnalyzer.analyze(
-                rawInput = request.rawInput,
-                inputFormat = request.inputFormat,
-                minimumPauseDurationMillis = planSource.parameters.minimumPauseDurationMillis,
-                cancellation = request.cancellation,
+                input, request.inputFormat, request.parameters.minimumPauseDurationMillis, request.cancellation,
             )
-            require(analysis.sourceRateHz == request.inputFormat.sampleRateHz) {
-                "Pause analysis source sample rate does not match the PCM recording"
-            }
-            require(analysis.totalFrames == source.totalFrames) {
-                "PCM source changed while analyzing pauses"
-            }
-            when (
-                val outcome = buildSegmentPlan(
-                    sourceRateHz = analysis.sourceRateHz,
-                    totalFrames = analysis.totalFrames,
-                    maxSegmentFrames = planSource.parameters.maximumSegmentFrames(analysis.sourceRateHz),
-                    silenceIntervals = analysis.silenceIntervals,
-                )
-            ) {
-                SegmentPlanOutcome.NoSpeech -> null
-                is SegmentPlanOutcome.Plan -> SegmentedUploadSnapshot(planSource.parameters, outcome.value).also { snapshot ->
-                    // Persist this before any local conversion: retry must
-                    // retain boundaries even if FFmpeg fails part-way through.
-                    request.onPlanFrozen?.invoke(snapshot)
-                }
-            }
+            require(analysis.sourceRateHz == rate) { "Pause analysis sample rate changed" }
+            require(analysis.totalFrames == source.totalFrames) { "PCM source length changed while analyzing pauses" }
+            analysis.silenceIntervals
         }
-    }
-
-    private fun validateSnapshotForSource(
-        snapshot: SegmentedUploadSnapshot,
-        inputFormat: Pcm16Format,
-        source: PcmSource,
-    ) {
-        snapshot.plan.validate()
-        require(snapshot.plan.sourceRateHz == inputFormat.sampleRateHz) {
-            "Frozen segment plan sample rate does not match the PCM recording"
-        }
-        require(snapshot.plan.totalFrames == source.totalFrames) {
-            "Frozen segment plan length does not match the PCM recording"
+        return when (val outcome = buildSegmentPlan(
+            rate, source.totalFrames, maxFrames, pauses, speechConfirmed,
+        )) {
+            SegmentPlanOutcome.NoSpeech -> null
+            is SegmentPlanOutcome.Plan -> outcome.value
         }
     }
 

@@ -14,11 +14,11 @@ Dictate is an Android speech transcription and selected-text post-processing too
 - **Text rewriting**: Configure prompts, providers, models, and parameters. After selecting text, long-press the floating button to choose and invoke a rewrite action.
 - **Custom APIs**: Configure standard OpenAI-compatible audio APIs and Rewrite APIs from different providers, together with models, prompts, and additional request parameters.
 - **Advanced Custom Audio API Provider**: Generate and validate declarative ASR Provider workflows from separate user requirements and vendor documentation. Provides typed controls, conditional visibility, single-select and multi-select controls, and supports one-shot requests, streamed responses, asynchronous polling, and real-time WebSocket transcription.
-- **Segmented upload**: Optionally split long non-realtime ASR work into independent local batches. It uses raw PCM amplitude pauses without removing silence, exports complete media files sequentially through FFmpeg, and bounds concurrent recognition workflows. It supports standard OpenAI-compatible transcription and Advanced non-realtime workflows; realtime and Rewrite are excluded.
+- **Segmented upload**: Optionally split long non-realtime ASR work into independent local batches. After optional VAD trimming, it uses PCM amplitude pauses to choose boundaries, exports complete media files sequentially through FFmpeg, and bounds concurrent recognition workflows. It supports standard OpenAI-compatible transcription and Advanced non-realtime workflows; realtime and Rewrite are excluded.
 - **Visible ASR failures**: After retries are exhausted, terminal ASR request failures insert a concise, redacted placeholder. Valid completed responses with an empty, whitespace-only, or `null` transcript finish normally without output, retries, or placeholders; the exact HTTP 400 `ASR_RESPONSE_HAVE_NO_WORDS` recognition response also means no speech. Segmented batches omit empty transcripts and retain successful sibling text and actual failure placeholders in source order. Cancellation, configuration, and local-media failures remain ordinary errors.
 - **Automatic insertion**: Transcription and rewrite results are inserted at the active cursor or replace the current editable selection. A clipboard copy is retained by default; when that option is disabled, the clipboard is used only as a fallback after a confirmed write failure.
 - **Audio processing**: Choose recording and output formats; FFmpeg is bundled, with no separate installation required.
-- **Local concurrent segmented uploads**: Based on audio-amplitude silence analysis, uses pauses as preferred breakpoints while preserving the complete audio timeline, exports the audio as independent media chunks, and submits them to the ASR API with limited concurrency.
+- **Local concurrent segmented uploads**: Based on audio-amplitude silence analysis, uses pauses as preferred breakpoints while preserving the selected PCM timeline, exports the audio as independent media chunks, and submits them to the ASR API with limited concurrency.
 - **Task and configuration security**: Transcoding, network requests, and retries can all be canceled. API keys, workflows, and remote-storage credentials are encrypted with Android Keystore, with support for redacted diagnostics, live endpoint testing, and validated JSON import and export.
 
 ### Introduction to the selected-text processing feature
@@ -53,18 +53,21 @@ flowchart TB
   C -->|"Read selection"| L["Prompt menu for selected text"]
   L -->|"Chosen prompt"| C
   C --> D["RecordingService / AudioRecord"]
-  D --> RAW["Retained original PCM"]
+  D --> RAW["AudioFileStore<br/>Last valid original PCM in app-private storage"]
+  C -->|"Manual resend with current settings"| RAW
   RAW --> ROUTE{"ASR route"}
-  ROUTE -->|"Whole file"| VF{"VAD enabled?"}
-  VF -->|"Off (all frames)"| E["FFmpeg media encoder"]
+  TEST["Built-in PCM for ASR connection tests"] --> ROUTE
+  ROUTE -->|"Non-realtime"| VF{"VAD enabled?"}
+  VF -->|"Off (all frames)"| MODE{"Segmented upload enabled?"}
   VF -->|"On (resample if needed)"| VA["Earshot via JNI<br/>16 kHz mono PCM16 for analysis"]
   VA -->|"Padded source-frame ranges"| CUT["Select and join frames<br/>from original PCM"]
-  CUT --> E
+  CUT --> MODE
+  MODE -->|"No"| E["FFmpeg media encoder"]
   E --> F["OpenAI-compatible<br/>OkHttp HTTP"]
   E --> AA["AdvancedAudioClient<br/>validate + render workflow"]
-  ROUTE -->|"Segmented"| SU["Find amplitude pauses and freeze the plan<br/>or reuse the saved plan"]
-  SU --> SE["FFmpeg CLI<br/>sequential independent media export"]
-  SE --> SB["Bounded complete recognition batch"]
+  MODE -->|"Yes"| SU["Plan segments on this PCM<br/>Skip the pause scan if confirmed speech fits"]
+  SU -->|"Planned ranges"| SE["FFmpeg CLI<br/>Encode each range once"]
+  SE --> SB["Bounded recognition batch<br/>Automatic retries reuse each segment's file"]
   SB --> F
   SB --> AA
   F --> G["User standard API URL"]
@@ -83,11 +86,14 @@ flowchart TB
   AA -.-> NR
   RT -.-> NR
   C -->|"Non-test result with text or a failure placeholder"| T["TextDelivery"]
-  VA -->|"No speech ranges"| NS["completeNoSpeech"]
-  C -->|"Completed ASR result is blank"| NS
-  NS -->|"Voice job"| ID["Idle / No speech detected"]
+  VA -->|"No speech ranges"| LOCAL["Local no speech<br/>Skip the upload"]
+  SU -->|"VAD off and original is silent"| LOCAL
+  C -->|"Completed ASR result is blank"| NS["completeNoSpeech"]
+  LOCAL -->|"Voice job"| ID["Idle / No speech detected"]
+  NS -->|"Voice job"| ID
   C -->|"Connection test"| CT["ConnectionTestResult<br/>no text delivery"]
-  NS -->|"Connection test"| CT
+  LOCAL -->|"Unsuccessful test"| CT
+  NS -->|"Successful empty test"| CT
   T --> W["Accessibility insertion pipeline"]
   W -->|"Android 13+"| M["AccessibilityInputConnection<br/>commitText + verification"]
   W -->|"Android 8–12<br/>or confirmed-failure fallback"| S["ACTION_SET_TEXT<br/>cursor insertion or selection replacement"]
@@ -103,7 +109,7 @@ flowchart TB
   PI --> CI["Private custom icon files"]
 ```
 
-The controller selects realtime first, then segmented upload if enabled or a valid segment plan exists for the recording. Whole-file uploads use the VAD switch. Child segment results return to their parent batch before the controller decides whether the complete result needs delivery. ASR clients share the no-words classifier. Rewrite validates its own responses.
+Realtime uses the full recording. For non-realtime ASR the controller selects speech if VAD is on, then encodes one file or partitions that PCM for a segmented upload. Child segment results return to their parent batch before the controller decides whether the complete result needs delivery. ASR clients share the no-words classifier. Rewrite validates its own responses.
 
 ### Implementation map
 
@@ -112,13 +118,14 @@ Kotlin paths are relative to `app/src/main/java/com/joeykot/dictate/`. Native an
 | Module | Responsibility |
 |---|---|
 | `model/AppSettings.kt`, `ui/MainActivity.kt`, `settings/SettingsRepository.kt` | Define, display and persist the VAD switch, speech padding and start threshold. |
-| `util/AudioFileStore.kt` | Retain the original recording, its PCM format and any frozen segment plan for manual resend. |
-| `audio/VadAudio.kt`, `audio/PcmIntervals.kt`, `audio/AudioTranscoder.kt` | Prepare 16 kHz mono PCM16 for detection, release any resampled copy, then encode the selected frames from the original recording. |
+| `util/AudioFileStore.kt` | Retain the original PCM in app-private storage and recover its format for manual resend. |
+| `audio/VadAudio.kt`, `audio/PcmIntervals.kt`, `audio/AudioTranscoder.kt` | Detect speech on 16 kHz mono PCM16, release any resampled copy and select original PCM frames for whole-file encoding or segment export. |
 | `native/vad/src/` | Run Earshot through JNI and return padded, half-open speech ranges in original PCM frames. |
-| `audio/SegmentedUpload.kt` | Analyze PCM amplitude pauses or reuse a frozen plan, then export independent media files covering the original timeline. |
+| `audio/SegmentedUpload.kt` | Plan ranges for each attempt and encode them sequentially. Delete each raw slice after encoding and any temporary selected PCM after export. Clean up partial exports on failure or cancellation. |
+| `network/SegmentedUploadBatchRunner.kt`, `job/VoiceJobController.kt` | Limit concurrent recognition workflows, retry eligible requests within each segment and collect results in source order. Release encoded files when the workers finish, including on cancellation. |
 | `network/AsrResponse.kt` | Shared exact no-words code matching, with an HTTP-400-only wrapper. |
 | `network/TranscriptionClient.kt` | Legacy HTTP response validation; top-level `text` must exist and be a string or explicit `null`. |
-| `network/AppHttpClient.kt`, `network/dns/` | Shared application DNS policy, Android Private DNS/network monitoring, asynchronous backup preparation, and recovery on the first system DNS failure. |
+| `network/AppHttpClient.kt`, `network/dns/` | Monitor Android network and Private DNS settings. Recheck changes under the resolver lock before resetting providers or starting fallback probes. Prepare backup DNS asynchronously for recovery on system DNS failure. |
 | `advanced_audio/JsonPath.kt` | Bounded scalar extraction; opt-in `nullAsEmpty` for transcript fields only. |
 | `advanced_audio/TranscriptAccumulator.kt` | Text assembly and `OPEN / COMPLETE / FAILED` lifecycle; `isTranscriptText` identifies the four nullable text actions. |
 | `advanced_audio/AdvancedAudioClient.kt` | Request, HTTP stream, and async-poll execution; no-words termination, retries, cancellation checks, and remote cleanup. |
@@ -167,11 +174,11 @@ sequenceDiagram
       O->>J: Stop and transcribe
       J->>R: Stop recording
       R-->>J: Completed PCM file and capture format
-      J->>J: Retain the original recording
+      J->>J: Retain the valid original PCM in app-private storage
     else Manual resend
       U->>O: Hold idle button with no selected text or no saved prompts
       O->>J: Resend the last recording
-      J->>J: Load original PCM, current settings<br/>and any valid saved segment plan
+      J->>J: Load the original PCM and current settings
     else ASR connection test
       U->>J: Test with the built-in PCM recording
     end
@@ -188,33 +195,41 @@ sequenceDiagram
         J->>J: Join nonblank session text in order after recording stops
       end
     else Standard or Advanced non-realtime transcription
-      alt Segmented upload enabled or a valid saved plan exists
-        J->>J: Reuse the saved plan or find amplitude pauses<br/>and freeze a new plan
-        break Pause analysis finds the entire recording silent
-          J-->>U: Report local no-speech error and end the job
+      opt VAD enabled
+        opt Capture format needs conversion
+          J->>F: Resample to temporary 16 kHz mono PCM16 for analysis
         end
-        J->>F: Export all original frames as independent files in sequence
+        J->>N: Detect speech in 16 kHz mono PCM16
+        N-->>J: Padded ranges in original recording frames
+        J->>J: Release any temporary analysis PCM
+        break No speech ranges
+          alt ASR connection test
+            J-->>U: Report unsuccessful test and skip the upload
+          else Voice job
+            J-->>O: Return to Idle with No speech detected and keep the original
+          end
+        end
+        J->>J: Select and join the ranges from the original PCM
+      end
+      alt Segmented upload enabled
+        alt VAD-confirmed speech fits one segment
+          J->>J: Use the whole selection as one segment
+        else Longer selection or VAD disabled
+          J->>J: Analyze pauses on the selected PCM or original recording
+          break VAD is off and the original is silent
+            J-->>U: No speech detected (ASR connection tests fail locally)
+          end
+          J->>J: Split at qualifying pauses or at the duration limit
+        end
+        J->>F: Encode each planned range once
+        J->>J: Delete each raw slice after encoding and any temporary selected PCM after export
+        Note over J,F: A failed or canceled preparation also removes partial files
       else Whole-file upload
-        opt VAD enabled
-          opt Capture format needs conversion
-            J->>F: Resample to temporary 16 kHz mono PCM16 for analysis
-          end
-          J->>N: Detect speech in 16 kHz mono PCM16
-          N-->>J: Padded ranges in original recording frames
-          J->>J: Release any temporary analysis PCM
-          break No speech ranges
-            alt ASR connection test
-              J-->>U: Report unsuccessful test and skip the upload
-            else Voice job
-              J-->>O: Return to Idle with No speech detected and keep the original
-            end
-          end
-          J->>J: Select and join the ranges from the original PCM
-        end
-        J->>F: Encode selected original frames or the full recording with VAD off
+        J->>F: Encode the selected PCM
       end
 
       loop One recognition workflow per file, with bounded concurrency for segments
+        Note over J,V: Automatic retries within a segment workflow reuse its encoded file
         alt OpenAI-compatible transcription
           J->>V: POST the encoded file
           Note over J,V: Whole-file retry with VAD enabled<br/>Detect and encode again from the original PCM
@@ -226,10 +241,11 @@ sequenceDiagram
           J->>V: Run the validated request, stream or async workflow
           Note over J,V: With whole-file VAD, detect and encode again when a stage retries local audio.<br/>Reference-only retries reuse the remote reference or task ID. Async submit runs once.
         end
-        V-->>J: Recognition outcome
+        V-->>J: Final outcome for this file
       end
       opt Segmented batch
-        J->>J: Wait for all segments, then join nonblank text<br/>and failure placeholders in source order
+        J->>J: Join results in source order after workers finish
+        Note over J,F: Discard all encoded segments on success, failure or cancellation
       end
     end
   else Text selected and saved prompts exist
@@ -301,32 +317,33 @@ Post-processing captures selected text before opening the menu as its input. Bot
 stateDiagram-v2
   [*] --> Idle
   Idle --> Recording: start recording
-  Idle --> Transcoding: resend original PCM or start ASR connection test
+  Idle --> Transcoding: manual resend with current settings or ASR connection test
   Idle --> Requesting: choose Rewrite prompt or test Rewrite connection
   Recording --> Paused: pause
   Paused --> Recording: resume
   Recording --> Transcoding: stop
   Transcoding --> Requesting: encoded media ready or realtime finalization / replay
-  Requesting --> RetryWaiting: Legacy job, Rewrite or realtime replay retry
+  Requesting --> RetryWaiting: whole-file Legacy, Rewrite or realtime replay retry
   RetryWaiting --> Requesting: whole-file Legacy with VAD off, Rewrite or realtime replay
-  RetryWaiting --> Transcoding: whole-file Legacy with VAD on or whole-batch Legacy retry
+  RetryWaiting --> Transcoding: whole-file Legacy retry with VAD on
   Transcoding --> Idle: local no speech, preparation failure or cancel
   Requesting --> Idle: delivery, no speech, test result, failure or cancel
   Recording --> Idle: cancel/discard
   Paused --> Idle: cancel/discard
-  RetryWaiting --> Idle: cancel/keep raw
+  RetryWaiting --> Idle: cancel
   note right of Requesting
-    Advanced HTTP stages and per-segment retries stay here.
-    With whole-file VAD, a stage resending local audio
-    repeats detection and encoding. Empty ranges end the job.
-    Batches join results in source order after all children finish.
+    Each segment retries its own encoded file here.
+    The batch releases its files when all workers finish.
+    Advanced HTTP stage retries also stay here. With whole-file VAD,
+    a stage that resends local audio repeats detection and encoding.
     Live results also wait for recording to stop.
     Text delivery and clipboard fallback run here.
   end note
   note right of Transcoding
-    Whole-file VAD selects original PCM frames for encoding.
-    Empty speech ranges skip the pending upload.
-    Segmented mode exports all frames using a new or saved plan.
+    A manual resend reads the retained original PCM.
+    Non-realtime jobs apply the current VAD and upload settings.
+    Each segmented attempt plans and exports fresh files.
+    Local no-speech detection returns the job to Idle before upload.
   end note
   note right of Paused
     Advanced realtime finishes its current session
@@ -398,7 +415,7 @@ Pause-delimited live realtime sessions follow the same text-preservation rule bu
 
 Whole-request or aggregate ASR success with `text.isBlank()` calls `completeNoSpeech()`, which reuses `completeJob()`. Normal jobs return to Idle with localized `No speech detected`, bypassing `TextDelivery`, selection replacement, insertion, clipboard copying/pasting, placeholders, and automatic retries. Connection tests return `success = true` with available status/elapsed metadata; an HTTP 400 no-words response can therefore be a successful test carrying status 400.
 
-A valid original recording is retained once recording finishes, and empty recognition success does not delete it; it remains available for manual resend. Non-realtime requests start after promotion, while live realtime recognition can already be running during capture. Encoded temporary output and batch export directories are cleaned up normally; connection tests also delete their own temporary recording. A saved segmented-upload plan remains associated with the retained recording for subsequent resend. Local `SegmentedUploadPreparationResult.NoSpeech` is a separate pre-request outcome: it still uses `handleSegmentedNoSpeech()`, reports an unsuccessful connection test, and follows the existing local no-speech message path for normal jobs.
+A valid original recording is retained once recording finishes, and empty recognition success does not delete it; it remains available for manual resend. Non-realtime requests start after promotion, while live realtime recognition can already be running during capture. Encoded temporary output and batch export directories are cleaned up normally; connection tests also delete their own temporary recording. Manual resend reads the retained original and plans segments again using current settings. When local VAD finds no speech, the job finishes before ASR. With VAD off, the pause analyzer can also skip a fully silent recording. Both paths report an unsuccessful connection test and keep a normal recording available for resend.
 
 Cancellation and late-result guards remain active. Controller callbacks must match the current job ID (and live recording instance where applicable); canceled results cannot reach delivery. Started segmented children are allowed to drain after cancellation so their remote cleanup can finish. Advanced HTTP success checks cancellation again before returning; remote objects are cleaned in `finally`, honoring successful-upload retention for empty success and forcing deletion after failure/cancellation. Cleanup failure does not replace the recognition outcome.
 
@@ -560,13 +577,13 @@ See [ASR result contracts](#asr-result-contracts) for transcript extraction, no-
 
 This option is off by default. Its defaults are a maximum segment length of 295 seconds, a minimum pause duration of 700 ms, and one concurrent recognition workflow. It applies to normal OpenAI-compatible transcription and Advanced non-realtime `request`, `request_stream`, and `async_poll` workflows, retaining every supported non-realtime delivery form: `multipart_file`, `raw_audio`, `base64`, `data_uri`, `public_https_url`, `cloud_uri`, and `provider_upload`. It does not apply to Advanced realtime sessions or Rewrite.
 
-The planner analyzes original PCM amplitude, selects pauses near the configured upper limit, and preserves every PCM frame, including silence. When no suitable pause exists before the limit, it cuts at the limit. FFmpeg sequentially exports each contiguous interval as a complete independent media file; the concurrency setting limits complete recognition workflows, not local encoding.
+When VAD confirms speech and the selected PCM fits one segment, the planner sends the whole selection to the encoder. For longer selections, it analyzes pauses near the configured upper limit. With VAD off, it always checks the original PCM for silence. Every frame of the selected input belongs to one segment. When no suitable pause exists before the limit, the planner cuts at the limit. FFmpeg sequentially exports each contiguous interval as a complete independent media file; the concurrency setting limits complete recognition workflows, not local encoding.
 
-Text is concatenated in source order. After each segment exhausts its retry policy, a terminal service or transport failure is represented by a concise, redacted placeholder at that segment's position; successful siblings are retained. Cancellation still delivers no text, and configuration or local-media failures remain ordinary errors rather than transcript text. The first segmented attempt freezes its plan and segmentation parameters; automatic retries and retranscription of the latest recording re-export the original PCM with that plan instead of analyzing pauses again.
+Text is concatenated in source order. After each segment exhausts its retry policy, a terminal service or transport failure is represented by a concise, redacted placeholder at that segment's position; successful siblings are retained. Cancellation still delivers no text, and configuration or local-media failures remain ordinary errors rather than transcript text. Automatic segment retries reuse the encoded file. After all requests finish or are canceled, only the original PCM is retained. Manual resend uses current settings and builds a new plan.
 
 ### Audio encoding settings
 
-Whole-file Legacy and Advanced non-realtime uploads support Earshot 1.2.2 VAD. A fresh Rust detector reads mono 16 kHz PCM16, supplied by the existing FFmpeg CLI when resampling is necessary. JNI returns half-open original-frame ranges with padding applied. Any resampled analysis file is released before Kotlin copies and concatenates the original PCM samples for encoding. Manual resends and automatic retries that upload local audio repeat detection on the original recording. Polls and retries that reuse an existing remote audio reference keep their workflow state. No speech skips ASR and preserves the last recording. Live/replayed realtime and segmented uploads (including frozen plans) take precedence. The switch defaults off, padding defaults to 100 ms (0–1000), and the start threshold defaults to 0.6 (0.5–1.0).
+Legacy and Advanced non-realtime uploads support Earshot 1.2.2 VAD. A fresh Rust detector reads mono 16 kHz PCM16, supplied by the existing FFmpeg CLI when resampling is necessary. JNI returns half-open original-frame ranges with padding applied. Any resampled analysis file is released before Kotlin copies and concatenates the original PCM samples for encoding. Manual resends repeat detection on the original recording. Automatic whole-file retries that send local audio repeat detection, and automatic segment retries reuse the encoded segment. Polls and retries that reuse an existing remote audio reference keep their workflow state. No speech skips ASR and preserves the last recording. Live and replayed realtime sessions use the full PCM. The switch defaults off, padding defaults to 100 ms (0–1000), and the start threshold defaults to 0.6 (0.5–1.0).
 
 Recording stays at 16-bit mono PCM at the active route's capture rate. FFmpeg converts the sample format/bit depth and resamples when encoding. All currently offered encoders accept mono; if an encoder requires more channels, the conversion path copies the source into every channel of its smallest supported layout.
 

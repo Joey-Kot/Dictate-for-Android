@@ -79,6 +79,19 @@ class VadAudioIntegrationTest {
         assertEquals(AudioTranscoder.Result.Success(output), result)
         assertArrayEquals(expected.toByteArray(), output.readBytes())
 
+        val workspace = File(dir, "segments")
+        val segmented = SegmentedUploadPreparer().prepare(SegmentedUploadPreparationRequest(
+            rawInput = original, inputFormat = format, encodingPlan = plan, temporaryRoot = workspace,
+            parameters = SegmentedUploadParameters(1, 100, 1), operationIdForSegment = { 100L + it },
+            encoder = AudioTranscoderSegmentMediaEncoder(transcoder),
+            selectSpeech = { scratch -> transcoder.selectSpeechPcm(6, original, format, scratch, VadConfig(true)) { false } },
+        ))
+        val batch = (segmented as SegmentedUploadPreparationResult.Success).upload
+        assertArrayEquals(expected.toByteArray(), batch.files.flatMap { it.readBytes().asIterable() }.toByteArray())
+        assertEquals(batch.files.toSet(), batch.directory.listFiles()!!.toSet())
+        batch.cleanup()
+        assertTrue(workspace.listFiles()!!.isEmpty())
+
         assertEquals(AudioTranscoder.Result.Success(output),
             transcoder.transcodeRecording(3, original, format, output, plan, VadConfig()) { false })
         assertArrayEquals(originalBytes, output.readBytes())

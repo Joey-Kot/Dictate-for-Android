@@ -117,7 +117,7 @@
     <string name="vad_enabled">Sprachaktivität erkennen (VAD)</string>
     <string name="vad_padding">VAD-Randzugabe (ms)</string>
     <string name="vad_threshold">VAD-Startschwelle</string>
-    <string name="vad_help">Beim Hochladen einer ganzen Aufnahme werden Abschnitte ohne Sprache aus dem Original herausgeschnitten. Segmentierte Uploads und Echtzeitsitzungen verwenden die vollständige Aufnahme.</string>
+    <string name="vad_help">Bei der Transkription nach der Aufnahme werden die Sprachabschnitte vor dem Kodieren oder Aufteilen ausgeschnitten. Die Echtzeittranskription verwendet die gesamte Aufnahme.</string>
     <string name="vad_invalid_padding">Die VAD-Randzugabe muss zwischen 0 und 1000 ms liegen</string>
     <string name="vad_invalid_threshold">Die VAD-Startschwelle muss zwischen 0,5 und 1,0 liegen</string>
     <string name="vad_failed">Audioverarbeitung mit VAD fehlgeschlagen: %1$s</string>

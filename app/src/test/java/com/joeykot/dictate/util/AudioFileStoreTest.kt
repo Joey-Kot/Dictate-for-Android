@@ -6,7 +6,6 @@ import com.joeykot.dictate.model.Pcm16Format
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -25,62 +24,15 @@ class AudioFileStoreTest {
     }
 
     @Test
-    fun segmentedSnapshotBelongsOnlyToTheCurrentLastRecording() {
-        val store = newStore()
-        val first = promote(store, jobId = 1L)
-
-        assertTrue(store.saveLastRecordingSegmentedUploadSnapshot(first, "{\"version\":1}"))
-        assertEquals("{\"version\":1}", store.lastRecordingSegmentedUploadSnapshot(first))
-
-        val replacement = promote(store, jobId = 2L)
-        assertNull(store.lastRecordingSegmentedUploadSnapshot(replacement))
-    }
-
-    @Test
-    fun missingSegmentedSnapshotIsLeftAbsent() {
+    fun cleanupDiscardsLegacySegmentPlansAndPreservesTheirOriginalPcm() {
         val store = newStore()
         val recording = promote(store, jobId = 1L)
-        val sidecar = snapshotFile(recording)
-
+        val original = recording.file.readBytes()
+        val sidecar = snapshotFile(recording).apply { writeText("obsolete plan") }
+        store.cleanupTemporaryFiles()
         assertFalse(sidecar.exists())
-        assertNull(store.lastRecordingSegmentedUploadSnapshot(recording))
-        assertFalse(sidecar.exists())
-    }
-
-    @Test
-    fun invalidSegmentedSnapshotFilesAreRemovedWhenRead() {
-        val store = newStore()
-        val recording = promote(store, jobId = 1L)
-        val sidecar = snapshotFile(recording)
-
-        sidecar.writeText("")
-        assertNull(store.lastRecordingSegmentedUploadSnapshot(recording))
-        assertFalse(sidecar.exists())
-
-        sidecar.writeBytes(ByteArray(4 * 1024 * 1024 + 1) { 1 })
-        assertNull(store.lastRecordingSegmentedUploadSnapshot(recording))
-        assertFalse(sidecar.exists())
-
-        assertTrue(sidecar.mkdir())
-        assertNull(store.lastRecordingSegmentedUploadSnapshot(recording))
-        assertFalse(sidecar.exists())
-    }
-
-    @Test
-    fun conditionalSnapshotClearCannotDeleteANewerAtomicWrite() {
-        val store = newStore()
-        val recording = promote(store, jobId = 1L)
-        val staleSnapshot = "{\"version\":1,\"generation\":1}"
-        val currentSnapshot = "{\"version\":1,\"generation\":2}"
-
-        assertTrue(store.saveLastRecordingSegmentedUploadSnapshot(recording, staleSnapshot))
-        assertTrue(store.saveLastRecordingSegmentedUploadSnapshot(recording, currentSnapshot))
-
-        assertFalse(store.clearLastRecordingSegmentedUploadSnapshotIfUnchanged(recording, staleSnapshot))
-        assertEquals(currentSnapshot, store.lastRecordingSegmentedUploadSnapshot(recording))
-
-        assertTrue(store.clearLastRecordingSegmentedUploadSnapshotIfUnchanged(recording, currentSnapshot))
-        assertNull(store.lastRecordingSegmentedUploadSnapshot(recording))
+        assertEquals(recording, store.lastRecording())
+        assertTrue(original.contentEquals(recording.file.readBytes()))
     }
 
     @Test

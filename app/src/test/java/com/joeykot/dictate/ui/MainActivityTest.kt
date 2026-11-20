@@ -12,6 +12,7 @@ import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import com.joeykot.dictate.DictateApplication
+import com.joeykot.dictate.R
 import com.joeykot.dictate.i18n.AppStrings
 import com.joeykot.dictate.model.AudioCodec
 import com.joeykot.dictate.model.AudioConfig
@@ -230,20 +231,28 @@ class MainActivityTest {
             val padding = editTextForLabel(root, "VAD 边界填充（毫秒）")
             val threshold = editTextForLabel(root, "VAD 启动阈值")
             val save = findTextView(root, "保存设置") as Button
+            val savedMessage = controller.get().getString(R.string.main_settings_saved)
+            fun saveAndAwait(expected: VadConfig) {
+                val previousToast = ShadowToast.getLatestToast()
+                save.performClick()
+                assertTrue("Expected save confirmation for $expected", waitUntil {
+                    ShadowToast.getLatestToast() !== previousToast &&
+                        ShadowToast.getTextOfLatestToast() == savedMessage
+                })
+                assertEquals(expected, application.settingsRepository.get().vad)
+            }
             padding.setText("220")
             threshold.setText("")
             toggle.performClick()
             assertEquals("0.8", threshold.text.toString())
-            save.performClick()
-            assertTrue(waitUntil { application.settingsRepository.get().vad == VadConfig(false, 220, 0.8) })
+            saveAndAwait(VadConfig(false, 220, 0.8))
 
             toggle.performClick()
             padding.setText("1001")
             threshold.setText("0,72")
             toggle.performClick()
             assertEquals("220", padding.text.toString())
-            save.performClick()
-            assertTrue(waitUntil { application.settingsRepository.get().vad == VadConfig(false, 220, 0.72) })
+            saveAndAwait(VadConfig(false, 220, 0.72))
         } finally {
             controller.pause().stop().destroy()
         }

@@ -242,8 +242,12 @@ internal class FallbackDns(
 
     /** Called by Android's default-network callback as well as synchronously before using DoH. */
     fun refreshNetwork(): DnsNetworkState {
-        val current = networkState()
-        synchronized(lock) {
+        val observed = networkState()
+        return synchronized(lock) {
+            if (state == observed) return@synchronized observed
+            // A slow reader may have captured the previous network before a newer callback.
+            // Confirm a change under the lock before resetting providers or starting probes.
+            val current = networkState()
             if (state != current) {
                 val old = selection
                 generation++
@@ -258,8 +262,8 @@ internal class FallbackDns(
                 log("reset reason=network_or_dns_changed fallbackAllowed=${current.permitsFallback}")
                 if (preparationEnabled) startSelectionLocked(current, background = true)
             }
+            current
         }
-        return current
     }
 
     override fun close() {

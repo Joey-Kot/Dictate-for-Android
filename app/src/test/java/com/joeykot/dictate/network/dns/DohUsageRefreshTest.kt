@@ -7,6 +7,7 @@ import java.net.InetAddress
 import java.net.UnknownHostException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -75,6 +76,33 @@ class DohUsageRefreshTest {
         }
     }
 
+    @Test fun lateNetworkSnapshotCannotRestartProbesAfterPrivateDnsIsEnabled() {
+        val oldNetworkRead = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        Fixture(onNetworkRead = { snapshot ->
+            if (snapshot.permitsFallback) {
+                oldNetworkRead.countDown()
+                check(releaseRead.await(5, TimeUnit.SECONDS))
+            }
+        }).use { fixture ->
+            val executor = Executors.newSingleThreadExecutor()
+            try {
+                val delayed = executor.submit<DnsNetworkState> { fixture.resolver.refreshNetwork() }
+                assertTrue(oldNetworkRead.await(5, TimeUnit.SECONDS))
+                val privateDns = DnsNetworkState("wifi", true)
+                fixture.network.set(privateDns)
+                assertNull(fixture.resolver.prepare().get(5, TimeUnit.SECONDS))
+                releaseRead.countDown()
+                val effectiveNetwork = delayed.get(5, TimeUnit.SECONDS)
+                assertEquals(0, fixture.probeStarts())
+                assertEquals(privateDns, effectiveNetwork)
+            } finally {
+                releaseRead.countDown()
+                executor.shutdownNow()
+            }
+        }
+    }
+
     @Test fun networkChangeDiscardsAnOldMaintenanceResultAndPreparesForTheNewNetwork() {
         Fixture().use { fixture ->
             fixture.prepareAndActivate()
@@ -91,7 +119,10 @@ class DohUsageRefreshTest {
         }
     }
 
-    private class Fixture(private val systemHealthy: Boolean = false) : AutoCloseable {
+    private class Fixture(
+        private val systemHealthy: Boolean = false,
+        onNetworkRead: (DnsNetworkState) -> Unit = {},
+    ) : AutoCloseable {
         val oldAddress = listOf(InetAddress.getByName("8.8.8.8"))
         val newAddress = listOf(InetAddress.getByName("1.1.1.1"))
         val systemAddress = listOf(InetAddress.getByName("9.9.9.9"))
@@ -102,7 +133,7 @@ class DohUsageRefreshTest {
         val release = CountDownLatch(1)
         @Volatile var blockProbe = false
         val resolver = FallbackDns(
-            networkState = network::get,
+            networkState = { network.get().also(onNetworkRead) },
             system = object : Dns {
                 override fun lookup(hostname: String): List<InetAddress> =
                     if (systemHealthy) systemAddress else throw UnknownHostException()

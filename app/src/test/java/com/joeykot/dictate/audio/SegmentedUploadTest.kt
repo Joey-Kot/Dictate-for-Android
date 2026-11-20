@@ -25,7 +25,7 @@ class SegmentedUploadTest {
     private val sourceRateHz = 48_000
 
     @Test
-    fun frozenParametersRejectConcurrencyAboveTheAndroidSafeUpperBound() {
+    fun parametersRejectConcurrencyAboveTheAndroidSafeUpperBound() {
         assertThrows(IllegalArgumentException::class.java) {
             SegmentedUploadParameters(
                 maximumSegmentLengthSeconds = 1,
@@ -90,6 +90,12 @@ class SegmentedUploadTest {
             SegmentPlanOutcome.NoSpeech,
             buildSegmentPlan(format.sampleRateHz, analysis.totalFrames, 16_000, analysis.silenceIntervals),
         )
+        val request = SegmentedUploadPreparationRequest(
+            rawInput = raw, inputFormat = format, encodingPlan = pcmEncodingPlan(format),
+            temporaryRoot = root, parameters = SegmentedUploadParameters(1, 700, 1),
+            operationIdForSegment = Int::toLong, encoder = CopyingEncoder(),
+        )
+        assertEquals(SegmentedUploadPreparationResult.NoSpeech, SegmentedUploadPreparer().prepare(request))
     }
 
     @Test
@@ -117,7 +123,6 @@ class SegmentedUploadTest {
         writePcm(raw, samples)
         val sourceBytes = raw.readBytes()
         val encoder = CopyingEncoder()
-        var frozen: SegmentedUploadSnapshot? = null
         var plannedIds: List<Long>? = null
 
         val result = SegmentedUploadPreparer().prepare(
@@ -126,91 +131,95 @@ class SegmentedUploadTest {
                 inputFormat = format,
                 encodingPlan = pcmEncodingPlan(format),
                 temporaryRoot = root,
-                planSource = SegmentedUploadPlanSource.Analyze(
-                    SegmentedUploadParameters(
-                        maximumSegmentLengthSeconds = 1,
-                        minimumPauseDurationMillis = 200,
-                        concurrency = 2,
-                    ),
+                parameters = SegmentedUploadParameters(
+                    maximumSegmentLengthSeconds = 1,
+                    minimumPauseDurationMillis = 200,
+                    concurrency = 2,
                 ),
                 operationIdForSegment = { 4_000L + it },
                 encoder = encoder,
-                onPlanFrozen = { frozen = it },
                 onOperationsPlanned = { plannedIds = it },
             ),
         )
 
         val upload = assertSuccess(result)
-        assertEquals(
-            listOf(SourceInterval(0, 8), SourceInterval(8, 18), SourceInterval(18, 25)),
-            upload.snapshot.plan.segments,
-        )
-        assertEquals(listOf(4_000L, 4_001L, 4_002L), upload.operationIds)
-        assertEquals(upload.operationIds, plannedIds)
-        assertEquals(upload.snapshot, frozen)
-        assertEquals(upload.operationIds, encoder.requests.map { it.operationId })
+        assertEquals(listOf(8L, 10L, 7L), upload.files.map { it.length() / format.bytesPerFrame })
+        assertEquals(listOf(4_000L, 4_001L, 4_002L), plannedIds)
+        assertEquals(plannedIds, encoder.requests.map { it.operationId })
         assertTrue(encoder.requests.all { !it.rawInput.exists() })
         assertArrayEquals(sourceBytes, upload.files.flatMap { it.readBytes().asIterable() }.toByteArray())
 
-        val restored = SegmentedUploadSnapshotCodec.decode(SegmentedUploadSnapshotCodec.encode(upload.snapshot))
-        assertEquals(upload.snapshot, restored)
         upload.cleanup()
         assertFalse(upload.directory.exists())
     }
 
     @Test
-    fun frozenSnapshotReusesOriginalBoundariesWithoutReanalyzing() = withTemporaryDirectory { root ->
-        val format = Pcm16Format(sampleRateHz = 10, channelCount = 1)
-        val raw = File(root, "source.pcm")
-        writePcm(raw, IntArray(25) { 10_000 })
-        val snapshot = SegmentedUploadSnapshot(
-            parameters = SegmentedUploadParameters(1, 200, 3),
-            plan = SegmentPlan(
-                sourceRateHz = 10,
-                totalFrames = 25,
-                maxSegmentFrames = 10,
-                segments = listOf(SourceInterval(0, 8), SourceInterval(8, 18), SourceInterval(18, 25)),
-            ),
+    fun aNewAttemptPartitionsTheSelectedPcmWithCurrentSettings() = withTemporaryDirectory { root ->
+        val format = Pcm16Format(10, 1)
+        val original = File(root, "source.pcm")
+        writePcm(original, IntArray(30) { if (it in 10..<25) 1 else 10_000 + it })
+        val bytes = original.readBytes()
+        val request = SegmentedUploadPreparationRequest(
+            rawInput = original, inputFormat = format, encodingPlan = pcmEncodingPlan(format),
+            temporaryRoot = root, parameters = SegmentedUploadParameters(1, 200, 1),
+            operationIdForSegment = Int::toLong, encoder = CopyingEncoder(),
+            selectSpeech = { directory ->
+                AudioTranscoder.Result.Success(File(directory, "selected.pcm").apply { writeBytes(bytes.copyOfRange(20, 50)) })
+            },
         )
-        val analyzer = PcmPauseAnalysisProvider { _, _, _, _ ->
-            throw AssertionError("Frozen retries must not rerun pause analysis")
-        }
-        val encoder = CopyingEncoder()
-
-        val result = SegmentedUploadPreparer(analyzer).prepare(
-            SegmentedUploadPreparationRequest(
-                rawInput = raw,
-                inputFormat = format,
-                encodingPlan = pcmEncodingPlan(format),
-                temporaryRoot = root,
-                planSource = SegmentedUploadPlanSource.Frozen(snapshot),
-                operationIdForSegment = { 7_000L + it },
-                encoder = encoder,
-            ),
-        )
-
-        val upload = assertSuccess(result)
-        assertEquals(snapshot, upload.snapshot)
-        assertEquals(listOf(8L, 10L, 7L), upload.files.map { it.length() / format.bytesPerFrame })
-        upload.cleanup()
+        val first = assertSuccess(SegmentedUploadPreparer().prepare(request))
+        assertEquals(listOf(20L, 10L), first.files.map(File::length))
+        assertArrayEquals(bytes.copyOfRange(20, 50), first.files.flatMap { it.readBytes().asIterable() }.toByteArray())
+        assertEquals(first.files.toSet(), first.directory.listFiles()!!.toSet())
+        first.cleanup()
+        val next = assertSuccess(SegmentedUploadPreparer().prepare(request.copy(
+            selectSpeech = null, parameters = SegmentedUploadParameters(2, 200, 1),
+        )))
+        assertEquals(listOf(40L, 20L), next.files.map(File::length))
+        next.cleanup()
+        assertArrayEquals(bytes, original.readBytes())
+        assertEquals(listOf(original), root.listFiles()!!.toList())
     }
 
     @Test
-    fun frozenSnapshotRejectsAChangedSourceFormatOrFrameCountBeforeFfmpegStarts() = withTemporaryDirectory { root ->
-        val recordedFormat = Pcm16Format(sampleRateHz = 10, channelCount = 1)
+    fun confirmedSpeechThatFitsOneSegmentSkipsPauseAnalysis() = withTemporaryDirectory { root ->
+        val format = Pcm16Format(10, 1)
+        val original = File(root, "original.pcm")
+        writePcm(original, IntArray(20) { 10_000 + it })
+        val preparer = SegmentedUploadPreparer(PcmPauseAnalysisProvider { _, _, _, _ ->
+            error("A single VAD-confirmed segment needs no pause analysis")
+        })
+        for (frames in listOf(9, 10)) {
+            val selected = original.readBytes().copyOf(frames * format.bytesPerFrame)
+            val request = SegmentedUploadPreparationRequest(
+                rawInput = original, inputFormat = format, encodingPlan = pcmEncodingPlan(format),
+                temporaryRoot = root, parameters = SegmentedUploadParameters(1, 200, 1),
+                operationIdForSegment = Int::toLong, encoder = CopyingEncoder(),
+                selectSpeech = { directory ->
+                    AudioTranscoder.Result.Success(File(directory, "speech.pcm").apply { writeBytes(selected) })
+                },
+            )
+            val batch = assertSuccess(preparer.prepare(request))
+            assertArrayEquals(selected, batch.files.single().readBytes())
+            batch.cleanup()
+        }
+    }
+
+    @Test
+    fun analysisRejectsAChangedSourceFormatOrFrameCountBeforeFfmpegStarts() = withTemporaryDirectory { root ->
+        val recordedFormat = Pcm16Format(10, 1)
         val raw = File(root, "source.pcm")
         writePcm(raw, IntArray(20) { 10_000 })
-        val snapshot = SegmentedUploadSnapshot(
-            SegmentedUploadParameters(1, 200, 1),
-            SegmentPlan(10, 25, 10, listOf(SourceInterval(0, 10), SourceInterval(10, 20), SourceInterval(20, 25))),
-        )
+        val preparer = SegmentedUploadPreparer(PcmPauseAnalysisProvider { _, _, _, _ ->
+            PcmPauseAnalysis(10, 25L, emptyList())
+        })
         var called = false
         val request = SegmentedUploadPreparationRequest(
             rawInput = raw,
             inputFormat = recordedFormat,
             encodingPlan = pcmEncodingPlan(recordedFormat),
             temporaryRoot = root,
-            planSource = SegmentedUploadPlanSource.Frozen(snapshot),
+            parameters = SegmentedUploadParameters(1, 200, 1),
             operationIdForSegment = { 7_500L + it },
             encoder = SegmentMediaEncoder {
                 called = true
@@ -218,11 +227,11 @@ class SegmentedUploadTest {
             },
         )
 
-        val frameMismatch = SegmentedUploadPreparer().prepare(request)
+        val frameMismatch = preparer.prepare(request)
         assertFalse(called)
         assertTrue((frameMismatch as SegmentedUploadPreparationResult.Failure).message.contains("length"))
 
-        val rateMismatch = SegmentedUploadPreparer().prepare(
+        val rateMismatch = preparer.prepare(
             request.copy(
                 inputFormat = Pcm16Format(sampleRateHz = 20, channelCount = 1),
                 encodingPlan = pcmEncodingPlan(Pcm16Format(sampleRateHz = 20, channelCount = 1)),
@@ -234,11 +243,10 @@ class SegmentedUploadTest {
     }
 
     @Test
-    fun newlyFrozenPlanSurvivesAnEncoderFailureWhileTemporaryFilesAreRemoved() = withTemporaryDirectory { root ->
+    fun encoderFailureReleasesSelectedPcmAndPartialSegments() = withTemporaryDirectory { root ->
         val format = Pcm16Format(sampleRateHz = 10, channelCount = 1)
         val raw = File(root, "source.pcm")
         writePcm(raw, IntArray(10) { 10_000 })
-        var frozen: SegmentedUploadSnapshot? = null
 
         val result = SegmentedUploadPreparer().prepare(
             SegmentedUploadPreparationRequest(
@@ -246,15 +254,16 @@ class SegmentedUploadTest {
                 inputFormat = format,
                 encodingPlan = pcmEncodingPlan(format),
                 temporaryRoot = root,
-                planSource = SegmentedUploadPlanSource.Analyze(SegmentedUploadParameters(1, 200, 1)),
+                parameters = SegmentedUploadParameters(1, 200, 1),
+                selectSpeech = { directory ->
+                    AudioTranscoder.Result.Success(raw.copyTo(File(directory, "speech.pcm")))
+                },
                 operationIdForSegment = { 7_800L + it },
                 encoder = SegmentMediaEncoder { SegmentMediaEncodeResult.Failure("expected test failure") },
-                onPlanFrozen = { frozen = it },
             ),
         )
 
         assertTrue(result is SegmentedUploadPreparationResult.Failure)
-        assertEquals(listOf(SourceInterval(0, 10)), frozen?.plan?.segments)
         assertTrue(root.listFiles().orEmpty().all { it == raw })
     }
 
@@ -271,18 +280,13 @@ class SegmentedUploadTest {
                 return SegmentMediaEncodeResult.Success
             }
         }
-        val snapshot = SegmentedUploadSnapshot(
-            SegmentedUploadParameters(1, 200, 1),
-            SegmentPlan(10, 25, 10, listOf(SourceInterval(0, 10), SourceInterval(10, 20), SourceInterval(20, 25))),
-        )
-
         val result = SegmentedUploadPreparer().prepare(
             SegmentedUploadPreparationRequest(
                 rawInput = raw,
                 inputFormat = format,
                 encodingPlan = pcmEncodingPlan(format),
                 temporaryRoot = root,
-                planSource = SegmentedUploadPlanSource.Frozen(snapshot),
+                parameters = SegmentedUploadParameters(1, 200, 1),
                 operationIdForSegment = { 8_000L + it },
                 encoder = encoder,
                 cancellation = SegmentedUploadCancellation { cancelled.get() },
@@ -299,17 +303,13 @@ class SegmentedUploadTest {
         val raw = File(root, "source.pcm")
         writePcm(raw, IntArray(20) { 10_000 })
         var called = false
-        val snapshot = SegmentedUploadSnapshot(
-            SegmentedUploadParameters(1, 200, 1),
-            SegmentPlan(10, 20, 10, listOf(SourceInterval(0, 10), SourceInterval(10, 20))),
-        )
         val result = SegmentedUploadPreparer().prepare(
             SegmentedUploadPreparationRequest(
                 rawInput = raw,
                 inputFormat = format,
                 encodingPlan = pcmEncodingPlan(format),
                 temporaryRoot = root,
-                planSource = SegmentedUploadPlanSource.Frozen(snapshot),
+                parameters = SegmentedUploadParameters(1, 200, 1),
                 operationIdForSegment = { 42L },
                 encoder = SegmentMediaEncoder {
                     called = true
