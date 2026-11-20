@@ -1,0 +1,16 @@
+[package]
+name = "dictate-vad"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+earshot = "=1.2.2"
+jni = { version = "0.21.1", default-features = false }
+
+[profile.release]
+lto = "thin"

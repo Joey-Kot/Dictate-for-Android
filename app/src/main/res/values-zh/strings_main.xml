@@ -114,4 +114,11 @@
     <string name="main_about_license">许可证</string>
     <string name="main_about_repo">代码仓库</string>
     <string name="main_about_version">版本</string>
+    <string name="vad_enabled">启用语音活动检测（VAD）</string>
+    <string name="vad_padding">VAD 边界填充（毫秒）</string>
+    <string name="vad_threshold">VAD 启动阈值</string>
+    <string name="vad_help">整段上传时，从原始录音中裁掉非语音部分。分片上传和实时转录使用完整音频。</string>
+    <string name="vad_invalid_padding">VAD 边界填充必须是 0 到 1000 毫秒之间的整数</string>
+    <string name="vad_invalid_threshold">VAD 启动阈值必须在 0.5 到 1.0 之间</string>
+    <string name="vad_failed">VAD 音频处理失败：%1$s</string>
 </resources>

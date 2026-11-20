@@ -379,7 +379,8 @@ class AdvancedAudioClientTest {
                 pollFailure,
                 ScriptedOutcome.Response(response(200, "{\"status\":\"succeeded\",\"text\":\"polled\"}")),
             )
-            val result = run(workflowConfig(asyncRecognition(withPoll = true)), transport, audio, retrying())
+            val result = run(workflowConfig(asyncRecognition(withPoll = true)), transport, audio, retrying(),
+                prepareAudioForRetry = { error("Polling must not prepare another upload") })
 
             assertTrue(result is AdvancedAudioClient.Result.Success)
             assertEquals("polled", (result as AdvancedAudioClient.Result.Success).text)
@@ -534,6 +535,23 @@ class AdvancedAudioClientTest {
         assertEquals("result step", (result as AdvancedAudioClient.Result.Success).text)
         assertEquals(1, transport.requests.count { it.url.endsWith("/submit") })
         assertEquals(2, transport.requests.count { it.url.endsWith("/result") })
+    }
+
+    @Test
+    fun streamRetryUsesFreshUploadMetadata() = withAudio { audio ->
+        val transport = FakeTransport(
+            ScriptedOutcome.Response(response(503, "retry")),
+            ScriptedOutcome.Response(response(200, "data: {\"delta\":\"retried\"}\n\nevent: done\ndata: {}\n\n")),
+        )
+        val oldSize = audio.length()
+        val result = run(workflowConfig(streamRecognition()), transport, audio, retrying(),
+            prepareAudioForRetry = {
+                audio.appendBytes(byteArrayOf(5))
+                true
+            },
+        )
+        assertTrue(result is AdvancedAudioClient.Result.Success)
+        assertEquals(listOf(oldSize, oldSize + 1), transport.requests.map { (it.body as HttpBodySpec.Multipart).audio!!.sizeBytes })
     }
 
     @Test
@@ -785,6 +803,7 @@ class AdvancedAudioClientTest {
         retry: RetryConfig = RetryConfig(),
         secrets: Map<String, String> = emptyMap(),
         onDiagnostic: ((HttpDiagnosticEvent) -> Unit)? = null,
+        prepareAudioForRetry: (() -> Boolean)? = null,
     ): AdvancedAudioClient.Result = AdvancedAudioClient(transport).transcribe(
         AdvancedAudioClient.Request(
             config = config,
@@ -793,6 +812,7 @@ class AdvancedAudioClientTest {
             mimeType = "audio/wav",
             retry = retry,
             onDiagnostic = onDiagnostic,
+            prepareAudioForRetry = prepareAudioForRetry,
         ),
     )
 

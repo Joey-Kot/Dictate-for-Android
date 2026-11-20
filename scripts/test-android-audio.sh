@@ -78,5 +78,9 @@ if [[ -z "${DICTATE_FFPROBE:-}" || -z "${DICTATE_FFMPEG_DECODER:-}" ]]; then
     export DICTATE_FFMPEG_DECODER="$BUILD_ROOT/host-verifier/ffmpeg-$FFMPEG_VERSION/ffmpeg"
 fi
 cd "$ROOT_DIR"
+cargo build --release --locked --manifest-path native/vad/Cargo.toml --target-dir "$ROOT_DIR/app/build/rust-vad"
+export DICTATE_VAD_TEST_FFMPEG="$DICTATE_FFMPEG_DECODER"
 ./gradlew --no-daemon --no-configuration-cache :app:testDebugUnitTest \
-    --tests 'com.joeykot.dictate.audio.NativeAudioEncodingTest' --rerun-tasks
+    --tests 'com.joeykot.dictate.audio.NativeAudioEncodingTest' \
+    --tests 'com.joeykot.dictate.audio.VadAudioIntegrationTest' \
+    --tests 'com.joeykot.dictate.job.AdvancedAudioJobTest.vad*' --rerun-tasks

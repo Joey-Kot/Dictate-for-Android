@@ -47,27 +47,33 @@ The prompt menu expands smoothly from the button into a rounded, translucent, ve
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
   A["Accessibility service"] --> B["Non-focusable overlay"]
   B --> C["Single VoiceJobController"]
-  B --> L["Current selection and prompt menu"]
-  L --> C
-  C --> D["AudioRecord"]
-  C --> E["Embedded FFmpeg CLI"]
-  C --> SU["Optional segmented upload<br/>PCM amplitude pause analysis and frozen plan"]
+  C -->|"Read selection"| L["Prompt menu for selected text"]
+  L -->|"Chosen prompt"| C
+  C --> D["RecordingService / AudioRecord"]
+  D --> RAW["Retained original PCM"]
+  RAW --> ROUTE{"ASR route"}
+  ROUTE -->|"Whole file"| VF{"VAD enabled?"}
+  VF -->|"Off (all frames)"| E["FFmpeg media encoder"]
+  VF -->|"On (resample if needed)"| VA["Earshot via JNI<br/>16 kHz mono PCM16 for analysis"]
+  VA -->|"Padded source-frame ranges"| CUT["Select and join frames<br/>from original PCM"]
+  CUT --> E
+  E --> F["OpenAI-compatible<br/>OkHttp HTTP"]
+  E --> AA["AdvancedAudioClient<br/>validate + render workflow"]
+  ROUTE -->|"Segmented"| SU["Find amplitude pauses and freeze the plan<br/>or reuse the saved plan"]
   SU --> SE["FFmpeg CLI<br/>sequential independent media export"]
   SE --> SB["Bounded complete recognition batch"]
   SB --> F
   SB --> AA
-  C --> F["OpenAI-compatible<br/>OkHttp HTTP"]
   F --> G["User standard API URL"]
-  C --> AA["AdvancedAudioClient<br/>validate + render workflow"]
   AA --> OH["OkHttp HTTP<br/>request / stream / async poll"]
   OH --> V["Vendor API"]
   AA --> RA["RemoteAudioPublisher"]
   RA --> RS["WebDAV / S3-compatible / OSS"]
-  D --> RT["RealtimeSessionRunner<br/>bounded PCM tee / complete PCM replay"]
-  C --> RT
+  D -->|"Live PCM tee"| RT["RealtimeSessionRunner"]
+  ROUTE -->|"Realtime replay from byte zero"| RT
   RT --> WS["OkHttp WebSocket"]
   WS --> V
   C --> H["Post-processing providers and JSON merge"]
@@ -77,8 +83,11 @@ flowchart LR
   AA -.-> NR
   RT -.-> NR
   C -->|"Non-test result with text or a failure placeholder"| T["TextDelivery"]
-  C -->|"Non-test completed ASR aggregate is blank"| NS["completeNoSpeech<br/>normal completion / Idle"]
+  VA -->|"No speech ranges"| NS["completeNoSpeech"]
+  C -->|"Completed ASR result is blank"| NS
+  NS -->|"Voice job"| ID["Idle / No speech detected"]
   C -->|"Connection test"| CT["ConnectionTestResult<br/>no text delivery"]
+  NS -->|"Connection test"| CT
   T --> W["Accessibility insertion pipeline"]
   W -->|"Android 13+"| M["AccessibilityInputConnection<br/>commitText + verification"]
   W -->|"Android 8–12<br/>or confirmed-failure fallback"| S["ACTION_SET_TEXT<br/>cursor insertion or selection replacement"]
@@ -87,30 +96,36 @@ flowchart LR
   T -->|"always copy enabled<br/>or direct insertion explicitly failed"| I["Clipboard"]
   I -->|"direct insertion explicitly failed"| P["ACTION_PASTE"]
   P --> X
-  J["Settings<br/>standard + Advanced + segmented upload"] --> K["Preferences + Keystore"]
+  J["Settings<br/>standard + Advanced + segmented upload + VAD"] --> K["Preferences + Keystore"]
   J --> PI["PromptIconStore"]
   L --> PI
   PI --> BI["25 VectorDrawable resources"]
   PI --> CI["Private custom icon files"]
 ```
 
-The no-speech and connection-test nodes are controller branches, not additional job states. Child segment results return to their parent batch before the controller decides whether the complete result needs delivery. The shared no-words classifier is used by ASR clients; Rewrite keeps its own response validation.
+The controller selects realtime first, then segmented upload if enabled or a valid segment plan exists for the recording. Whole-file uploads use the VAD switch. Child segment results return to their parent batch before the controller decides whether the complete result needs delivery. ASR clients share the no-words classifier. Rewrite validates its own responses.
 
 ### Implementation map
 
-Paths below are relative to `app/src/main/java/com/joeykot/dictate/` unless a resource path is shown.
+Kotlin paths are relative to `app/src/main/java/com/joeykot/dictate/`. Native and Android resource paths start at the repository root.
 
-| Module | Responsibility relevant to empty recognition and prompt icons |
+| Module | Responsibility |
 |---|---|
+| `model/AppSettings.kt`, `ui/MainActivity.kt`, `settings/SettingsRepository.kt` | Define, display and persist the VAD switch, speech padding and start threshold. |
+| `util/AudioFileStore.kt` | Retain the original recording, its PCM format and any frozen segment plan for manual resend. |
+| `audio/VadAudio.kt`, `audio/PcmIntervals.kt`, `audio/AudioTranscoder.kt` | Prepare 16 kHz mono PCM16 for detection, release any resampled copy, then encode the selected frames from the original recording. |
+| `native/vad/src/` | Run Earshot through JNI and return padded, half-open speech ranges in original PCM frames. |
+| `audio/SegmentedUpload.kt` | Analyze PCM amplitude pauses or reuse a frozen plan, then export independent media files covering the original timeline. |
 | `network/AsrResponse.kt` | Shared exact no-words code matching, with an HTTP-400-only wrapper. |
 | `network/TranscriptionClient.kt` | Legacy HTTP response validation; top-level `text` must exist and be a string or explicit `null`. |
 | `network/AppHttpClient.kt`, `network/dns/` | Shared application DNS policy, Android Private DNS/network monitoring, asynchronous backup preparation, and recovery on the first system DNS failure. |
 | `advanced_audio/JsonPath.kt` | Bounded scalar extraction; opt-in `nullAsEmpty` for transcript fields only. |
 | `advanced_audio/TranscriptAccumulator.kt` | Text assembly and `OPEN / COMPLETE / FAILED` lifecycle; `isTranscriptText` identifies the four nullable text actions. |
 | `advanced_audio/AdvancedAudioClient.kt` | Request, HTTP stream, and async-poll execution; no-words termination, retries, cancellation checks, and remote cleanup. |
+| `advanced_audio/WorkflowValidator.kt`, `advanced_audio/StageRenderer.kt` | Identify stages that send local audio and invoke the controller's preparation callback before retrying them. Stages using a published audio reference reuse it. |
 | `advanced_audio/realtime/RealtimeSessionRunner.kt` | WebSocket rules and completion; retains the guard against completing before live PCM has ended. |
 | `advanced_audio/WorkflowSchemaDescription.kt` | Documents nullable transcript semantics for workflow generation without relaxing control-field extraction. |
-| `job/VoiceJobController.kt` | Aggregate child results, distinguish empty ASR success from failure, route whole-job completion or text delivery, and notify DNS maintenance once per completed voice job. |
+| `job/VoiceJobController.kt` | Select the audio route on recording, resend and retry. Handle local no-speech results, aggregate child responses, deliver text and notify DNS maintenance when a voice job completes. |
 | `model/PostProcessingConfig.kt`, `settings/PostProcessingSettingsCodec.kt` | Prompt icon ID, optional custom filename, object defaults, and JSON persistence. |
 | `util/PromptIconStore.kt`, `app/src/main/res/drawable/prompt_icon_*.xml` | Ordered built-in icon catalogue, Android vector loading, custom import, and display fallback. |
 | `ui/PostProcessingSettingsView.kt`, `overlay/PostProcessingMenuView.kt` | Horizontal icon picker and menu presentation; the editor owns pending imports and persists prompts independently. |
@@ -119,12 +134,18 @@ Paths below are relative to `app/src/main/java/com/joeykot/dictate/` unless a re
 ## Request Sequence
 
 ```mermaid
+---
+config:
+  sequence:
+    wrap: true
+---
 sequenceDiagram
   participant U as User
   participant O as Overlay
   participant J as VoiceJobController
   participant R as AudioRecord
   participant F as FFmpeg
+  participant N as Earshot (JNI)
   participant V as Transcription service
   participant P as Post-processing provider
   participant S as Remote storage
@@ -133,78 +154,96 @@ sequenceDiagram
   participant E as Current editor
   participant C as Clipboard
 
-  alt OpenAI-compatible voice transcription
-    U->>O: Tap
-    O->>J: Start recording
-    J->>R: Record route-selected-rate mono PCM
-    U->>O: Tap
-    O->>J: Stop and transcribe
-    J->>R: Stop and retain raw audio
-    alt Segmented upload enabled
-      J->>J: Analyze raw PCM amplitude pauses and freeze the segment plan
-      J->>F: Export complete independent media files in sequence
-      loop Bounded complete recognition workflows
-        J->>V: POST one transcription request per segment
-        V-->>J: Segment text
+  alt Voice transcription or ASR connection test
+    alt New recording
+      U->>O: Tap
+      O->>J: Start recording
+      J->>R: Record mono PCM at the capture rate
+      opt Advanced realtime workflow
+        J->>V: Open WebSocket and send initial messages
+        R->>V: Stream PCM through a bounded tee during capture
       end
-      Note over J,V: Wait for the batch - omit blank successes, preserve nonblank text, and retain actual failure placeholders in source order
-    else Segmented upload disabled
-      J->>F: Transcode with current settings
-      J->>V: POST OpenAI-compatible transcription request
-      V-->>J: Final response text
+      U->>O: Tap again
+      O->>J: Stop and transcribe
+      J->>R: Stop recording
+      R-->>J: Completed PCM file and capture format
+      J->>J: Retain the original recording
+    else Manual resend
+      U->>O: Hold idle button with no selected text or no saved prompts
+      O->>J: Resend the last recording
+      J->>J: Load original PCM, current settings<br/>and any valid saved segment plan
+    else ASR connection test
+      U->>J: Test with the built-in PCM recording
     end
-  else Advanced non-realtime voice transcription
-    U->>O: Tap, then tap again
-    O->>J: Record, stop, and retain raw audio
-    alt Segmented upload enabled
-      J->>J: Analyze raw PCM amplitude pauses and freeze the segment plan
-      J->>F: Export complete independent media files in sequence
-      loop Bounded complete recognition workflows
-        opt Workflow requires a remote audio reference
-          J->>S: Publish one encoded segment
-          S-->>J: Public HTTPS URL or cloud URI
+
+    alt Advanced realtime workflow
+      opt Live session still open at stop
+        J->>V: Send finish and await explicit completion
+        V-->>J: Session result
+      end
+      alt Live failure, incomplete session, resend or connection test
+        J->>V: Replay complete local PCM from byte zero
+        V-->>J: Final transcript
+      else All live sessions completed
+        J->>J: Join nonblank session text in order after recording stops
+      end
+    else Standard or Advanced non-realtime transcription
+      alt Segmented upload enabled or a valid saved plan exists
+        J->>J: Reuse the saved plan or find amplitude pauses<br/>and freeze a new plan
+        break Pause analysis finds the entire recording silent
+          J-->>U: Report local no-speech error and end the job
         end
-        J->>V: Validated request, stream, or async workflow
-        Note over J,V: Poll/result may retry, but submit is never retried
-        V-->>J: Segment text
+        J->>F: Export all original frames as independent files in sequence
+      else Whole-file upload
+        opt VAD enabled
+          opt Capture format needs conversion
+            J->>F: Resample to temporary 16 kHz mono PCM16 for analysis
+          end
+          J->>N: Detect speech in 16 kHz mono PCM16
+          N-->>J: Padded ranges in original recording frames
+          J->>J: Release any temporary analysis PCM
+          break No speech ranges
+            alt ASR connection test
+              J-->>U: Report unsuccessful test and skip the upload
+            else Voice job
+              J-->>O: Return to Idle with No speech detected and keep the original
+            end
+          end
+          J->>J: Select and join the ranges from the original PCM
+        end
+        J->>F: Encode selected original frames or the full recording with VAD off
       end
-      Note over J,V: Wait for the batch - omit blank successes, preserve nonblank text, and retain actual failure placeholders in source order
-    else Segmented upload disabled
-      J->>F: Transcode with current settings
-      opt Workflow requires a remote audio reference
-        J->>S: Publish encoded audio
-        S-->>J: Public HTTPS URL or cloud URI
+
+      loop One recognition workflow per file, with bounded concurrency for segments
+        alt OpenAI-compatible transcription
+          J->>V: POST the encoded file
+          Note over J,V: Whole-file retry with VAD enabled<br/>Detect and encode again from the original PCM
+        else Advanced HTTP workflow
+          opt Workflow requires a remote audio reference
+            J->>S: Publish the encoded file
+            S-->>J: Public HTTPS URL or cloud URI
+          end
+          J->>V: Run the validated request, stream or async workflow
+          Note over J,V: With whole-file VAD, detect and encode again when a stage retries local audio.<br/>Reference-only retries reuse the remote reference or task ID. Async submit runs once.
+        end
+        V-->>J: Recognition outcome
       end
-      J->>V: Validated request, stream, or async workflow
-      Note over J,V: Poll/result may retry, but submit is never retried
-      V-->>J: Final response text
+      opt Segmented batch
+        J->>J: Wait for all segments, then join nonblank text<br/>and failure placeholders in source order
+      end
     end
-  else Advanced realtime voice transcription
-    U->>O: Tap
-    O->>J: Start recording
-    J->>R: Keep local PCM and attach a bounded tee
-    J->>V: Open WebSocket and send initial messages
-    R->>V: PCM chunks
-    U->>O: Tap
-    O->>J: Stop recording
-    J->>V: Send finish and await explicit completion
-    opt Live session fails, falls behind, or ends incomplete
-      J->>V: Replay complete local PCM from zero
-    end
-    V-->>J: Final response text
-    Note over J,V: Empty pause sessions are successful children - aggregate only after recording stops and every session is terminal
   else Text selected and saved prompts exist
     U->>O: Hold idle button
-    O->>A: Read current selected text
-    A-->>O: Input text snapshot
+    O->>J: Handle long press
+    J->>A: Read current selected text
+    A-->>J: Input text snapshot
+    J-->>O: Open prompt menu for this selection
     O-->>U: Expand prompt menu
     U->>O: Choose a prompt
     O->>J: Submit input text and prompt
     J->>P: Merge prompt JSON and send post-processing request
     P-->>J: Final response text
   end
-
-  Note over J,V: Segmented batches retain every PCM frame - a blank child does not finish the parent job, and cancellation delivers no text
 
   alt Connection test
     J-->>U: Return ConnectionTestResult - completed empty ASR is successful
@@ -222,7 +261,7 @@ sequenceDiagram
       A->>E: Capture surrounding text before insertion
       A->>E: commitText(text)
 
-      loop Checks at zero, one hundred, and three hundred milliseconds
+      loop Until confirmed, with successive delays of 0, 100 and 300 ms
         A->>E: Capture surrounding text and verify
       end
 
@@ -244,7 +283,7 @@ sequenceDiagram
       D->>C: Copy result text
     end
 
-    opt Direct insertion failed and copy succeeded
+    opt Direct insertion failed, copy succeeded and the service is available
       D->>A: ACTION_PASTE
       A->>E: Paste into current focus
     end
@@ -261,39 +300,33 @@ Post-processing captures selected text before opening the menu as its input. Bot
 ```mermaid
 stateDiagram-v2
   [*] --> Idle
-  Idle --> Recording
-  Idle --> Transcoding: resend
-  Idle --> Requesting: choose post-processing prompt
-  Recording --> Paused
-  Paused --> Recording
+  Idle --> Recording: start recording
+  Idle --> Transcoding: resend original PCM or start ASR connection test
+  Idle --> Requesting: choose Rewrite prompt or test Rewrite connection
+  Recording --> Paused: pause
+  Paused --> Recording: resume
   Recording --> Transcoding: stop
-  Transcoding --> Requesting: single media or segmented export
-  Requesting --> RetryWaiting: legacy, post-processing, or realtime replay retry
-  RetryWaiting --> Requesting: single media, post-processing, or realtime replay retry
-  RetryWaiting --> Transcoding: segmented upload retry
-  Requesting --> Idle: completed ASR aggregate is blank / no delivery
-  Requesting --> Idle: connection test returns
-  Requesting --> Idle: delivery completes or ordinary failure ends
-  Transcoding --> Idle
+  Transcoding --> Requesting: encoded media ready or realtime finalization / replay
+  Requesting --> RetryWaiting: Legacy job, Rewrite or realtime replay retry
+  RetryWaiting --> Requesting: whole-file Legacy with VAD off, Rewrite or realtime replay
+  RetryWaiting --> Transcoding: whole-file Legacy with VAD on or whole-batch Legacy retry
+  Transcoding --> Idle: local no speech, preparation failure or cancel
+  Requesting --> Idle: delivery, no speech, test result, failure or cancel
   Recording --> Idle: cancel/discard
   Paused --> Idle: cancel/discard
-  Transcoding --> Idle: cancel/keep raw
-  Requesting --> Idle: cancel/keep raw
   RetryWaiting --> Idle: cancel/keep raw
   note right of Requesting
-    Includes legacy and Advanced HTTP stages,
-    remote upload and cleanup, stream/poll/result,
-    bounded complete segment workflows and source-order
-    join with safe terminal-failure placeholders,
-    realtime finalization or PCM replay, insertion
-    verification, safety copy, and paste fallback
-    Blank child successes do not finish the parent job
-    Live sessions also wait for recordingCompleted
+    Advanced HTTP stages and per-segment retries stay here.
+    With whole-file VAD, a stage resending local audio
+    repeats detection and encoding. Empty ranges end the job.
+    Batches join results in source order after all children finish.
+    Live results also wait for recording to stop.
+    Text delivery and clipboard fallback run here.
   end note
   note right of Transcoding
-    Segmented mode analyzes original PCM,
-    freezes one plan, and sequentially exports
-    complete independent media files with FFmpeg
+    Whole-file VAD selects original PCM frames for encoding.
+    Empty speech ranges skip the pending upload.
+    Segmented mode exports all frames using a new or saved plan.
   end note
   note right of Paused
     Advanced realtime finishes its current session
@@ -301,7 +334,7 @@ stateDiagram-v2
   end note
 ```
 
-Internal task states remain idle, recording, paused, transcoding, requesting, and retry waiting. Advanced HTTP stages reuse requesting; their phase-level retries never enter retry waiting or resubmit an async task. Realtime PCM replay retries use retry waiting and restart from byte zero. The menu is an idle presentation state and starts no request. Post-processing enters requesting directly, without recording or transcoding; success, failure, and cancellation do not replace the previous recording.
+Canceling a voice job after capture preserves the original recording for resend. Realtime replay retries restart from byte zero. The prompt menu stays in Idle. Choosing a prompt enters Requesting directly and preserves the previous recording.
 
 ## ASR result contracts
 
@@ -427,24 +460,25 @@ On Android 13 and newer, when accessibility nodes do not expose selected text, D
 
 ## Build from source
 
-Use a current JDK 17 security update (17.0.21 or newer), Android SDK Platform 35, Build Tools 36.0.0, and NDK `27.2.12479018`.
+Use the latest Eclipse Temurin 17 security update (`17.0.21.1+2` or newer), Android SDK Platform 35, Build Tools 36.0.0, and NDK `27.2.12479018`.
 
 ```bash
 export JAVA_HOME=/path/to/jdk-17
 export ANDROID_HOME=/path/to/android-sdk
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018"
 export GRADLE_USER_HOME=/tmp/gradle-user-home
-python3 scripts/harden-jdk-certificates.py "$JAVA_HOME"
 ./gradlew :app:assembleDebug
 ```
 
 `assembleDebug` automatically runs `scripts/build-android-ffmpeg.sh` when its arm64 FFmpeg binary is missing or the script has changed, then packages the result at `app/src/main/jniLibs/arm64-v8a/libffmpeg.so`. This requires an installed Android NDK exposed through `ANDROID_NDK_HOME` or `ANDROID_NDK_ROOT`; the generated binary is reused by unchanged Debug builds. The script remains available for an explicit native-only rebuild. Signed releases additionally use `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`.
 
+Debug and release packaging also build `libdictate_vad.so` with the same NDK. Install Rust 1.88 or later and run `rustup target add aarch64-linux-android` first. The standalone native build is `scripts/build-android-vad.sh`, and the detector and interval tests run with `cargo test --locked --manifest-path native/vad/Cargo.toml`.
+
 Only change `appVersionName` in `app/build.gradle.kts` when the user explicitly requests a version update. Do not change it for ordinary development, builds, or releases without that request. Local builds and GitHub Actions use this fixed `major.minor.patch` value; the Android version code is derived as `major * 1,000,000 + minor * 1,000 + patch`. The major component can be at most 2099 and the minor and patch components at most 999. A higher version is needed for Android upgrades. Debug builds append `-debug` to the version name.
 
 Release builds enable R8 code shrinking, optimization, obfuscation, and resource shrinking. CI archives `mapping.txt` as a workflow artifact for recovering original crash stack traces. Debug builds remain unminified.
 
-The build uses AGP 9.4.1, Gradle 9.8.1, and AGP built-in Kotlin overridden to 2.4.21. Buildscript-only constraints upgrade Bouncy Castle to 1.85, Commons Lang to 3.18.0, jose4j to 0.9.6, and JDOM to 2.0.6.1; these overrides do not add APK runtime dependencies. Before starting Gradle, `scripts/harden-jdk-certificates.py` applies the pinned [eMudhra certificate blocklist](https://docs.azul.com/core/emudhra-workaround) to the build JDK while preserving existing blocks; restart any existing Java/Gradle processes afterward. CI applies it immediately after setting up Java.
+The build uses AGP 9.4.1, Gradle 9.8.1, and AGP built-in Kotlin overridden to 2.4.21. Buildscript-only constraints upgrade Bouncy Castle to 1.85, Commons Lang to 3.18.0, jose4j to 0.9.6, and JDOM to 2.0.6.1; these overrides do not add APK runtime dependencies.
 
 The native build requires Linux, `make`, `pkg-config`, `curl`, `tar`, gzip, and XZ support. The script verifies the FFmpeg `9.0.2`, Opus `1.5.2`, LAME `3.100`, libogg `1.3.5`, libvorbis `1.3.7`, OpenCORE AMR `0.1.6`, VisualOn AMR-WB `0.1.3`, and Speex `1.2.1` source archives by SHA-256. FFmpeg uses the unmodified `https://www.ffmpeg.org/releases/ffmpeg-9.0.2.tar.gz` release archive. It builds only AArch64, checks every required encoder/muxer/filter, rejects input demuxers other than `pcm_s16le`, and verifies the resulting Android PIE executable's 16 KiB load alignment. This FFmpeg build uses `--enable-gpl --enable-version3`; dependency licenses and checksums are recorded in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
@@ -531,6 +565,8 @@ The planner analyzes original PCM amplitude, selects pauses near the configured 
 Text is concatenated in source order. After each segment exhausts its retry policy, a terminal service or transport failure is represented by a concise, redacted placeholder at that segment's position; successful siblings are retained. Cancellation still delivers no text, and configuration or local-media failures remain ordinary errors rather than transcript text. The first segmented attempt freezes its plan and segmentation parameters; automatic retries and retranscription of the latest recording re-export the original PCM with that plan instead of analyzing pauses again.
 
 ### Audio encoding settings
+
+Whole-file Legacy and Advanced non-realtime uploads support Earshot 1.2.2 VAD. A fresh Rust detector reads mono 16 kHz PCM16, supplied by the existing FFmpeg CLI when resampling is necessary. JNI returns half-open original-frame ranges with padding applied. Any resampled analysis file is released before Kotlin copies and concatenates the original PCM samples for encoding. Manual resends and automatic retries that upload local audio repeat detection on the original recording. Polls and retries that reuse an existing remote audio reference keep their workflow state. No speech skips ASR and preserves the last recording. Live/replayed realtime and segmented uploads (including frozen plans) take precedence. The switch defaults off, padding defaults to 100 ms (0–1000), and the start threshold defaults to 0.6 (0.5–1.0).
 
 Recording stays at 16-bit mono PCM at the active route's capture rate. FFmpeg converts the sample format/bit depth and resamples when encoding. All currently offered encoders accept mono; if an encoder requires more channels, the conversion path copies the source into every channel of its smallest supported layout.
 
@@ -658,7 +694,7 @@ For example, this per-prompt configuration selects `another-model` and removes `
 
 The Model from the selected shared or independent API configuration is a default; validation uses the model after merging. Google's final model is used in its request URL. Additional fields must follow the selected provider's API format; deleting a required field can produce a configuration or server error.
 
-Exports use `schemaVersion: 8`, with exact `audioOutput.bitrateBps`, the interface `language` tag, post-processing settings, ordered prompts with optional independent API settings, custom icons, and non-secret `advancedAudio` and `segmentedUpload` settings. A prompt's `provider` is `null` for inheritance; independent configurations store `provider`, `baseUrl`, and `model`. Imports accept versions 1–8. Versions 7 and 8 require `advancedAudio`; version 8 also requires `segmentedUpload`. Versions 1–7 initialize segmented upload as disabled with 295 seconds, 700 ms, and concurrency 1. Versions 1–4 have their `bitrateKbps` converted to bits per second. Existing PCM/WAV settings, including unsigned 8-bit output, are retained. Legacy Opus selections of 32/44.1 kHz migrate to 48 kHz, matching their previous encoded output. Versions 1–3 default to an empty prompt list; prompts without a `provider` inherit the main API, and configurations without a `language` field default to English. Invalid encoding combinations are rejected before applying an import.
+Exports use `schemaVersion: 9`, with exact `audioOutput.bitrateBps`, the interface `language` tag, post-processing settings, ordered prompts with optional independent API settings, custom icons, and non-secret `advancedAudio`, `segmentedUpload`, and `vad` settings. A prompt's `provider` is `null` for inheritance; independent configurations store `provider`, `baseUrl`, and `model`. Imports accept versions 1–9. Version 7 and later require `advancedAudio`, version 8 and later require `segmentedUpload`, and version 9 requires `vad`. Earlier versions use the VAD defaults. Versions 1–7 initialize segmented upload as disabled with 295 seconds, 700 ms, and concurrency 1. Versions 1–4 have their `bitrateKbps` converted to bits per second. Existing PCM/WAV settings, including unsigned 8-bit output, are retained. Legacy Opus selections of 32/44.1 kHz migrate to 48 kHz, matching their previous encoded output. Versions 1–3 default to an empty prompt list; prompts without a `provider` inherit the main API, and configurations without a `language` field default to English. Invalid encoding combinations are rejected before applying an import.
 
 The clipboard safety copy is enabled by default. Turning it off restores fallback-only behavior: Dictate copies only when current-focus insertion explicitly fails. An unconfirmed insertion is never retried or copied automatically in that mode, because it may still have reached the editor.
 

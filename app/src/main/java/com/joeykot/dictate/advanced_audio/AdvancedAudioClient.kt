@@ -58,9 +58,13 @@ class AdvancedAudioClient(
         val onPhase: ((String) -> Unit)? = null,
         /** Safe lifecycle/transport metadata, independently of UI phase callbacks. */
         val onDiagnostic: ((HttpDiagnosticEvent) -> Unit)? = null,
+        /** Rebuild the local file before an audio-bearing retry. False means the source contains no speech. */
+        val prepareAudioForRetry: (() -> Boolean)? = null,
     )
 
     sealed interface Result {
+        data object LocalNoSpeech : Result
+
         data class Success(
             val text: String,
             val statusCode: Int,
@@ -134,6 +138,7 @@ class AdvancedAudioClient(
             val upload = WorkflowAudio.fromFile(
                 request.audioFile,
                 workflow.audio.mime?.takeIf { it.isNotBlank() } ?: request.mimeType,
+                request.prepareAudioForRetry,
             )
             val runtime = runtimeValues()
             val renderer = WorkflowStageRenderer(workflow, values, workflowSecrets, runtime)
@@ -229,6 +234,8 @@ class AdvancedAudioClient(
             Result.Cancelled(elapsedMillis())
         } catch (_: RemoteAudioException.Cancelled) {
             Result.Cancelled(elapsedMillis())
+        } catch (_: AdvancedAudioExecutionException.NoSpeechInRecording) {
+            Result.LocalNoSpeech
         } catch (error: AdvancedAudioExecutionException) {
             trace.failure(error)
             Result.Failure(
@@ -383,6 +390,7 @@ class AdvancedAudioClient(
                 val delay = retry.delayMillis(attempt)
                 trace.retry(attempt + 1, delay, error)
                 waitCancellable(delay, cancellation)
+                audio.prepareForRetry(recognition.request)
             }
         }
     }
@@ -609,6 +617,7 @@ class AdvancedAudioClient(
                 } ?: retry.delayMillis(attempt)
                 trace.retry(attempt + 1, delay, error)
                 waitCancellable(delay, cancellation)
+                audio.prepareForRetry(stage)
             }
         }
     }
@@ -860,6 +869,8 @@ sealed class AdvancedAudioExecutionException(
     data object MissingWorkflow : AdvancedAudioExecutionException("Advanced Audio API is enabled but has no workflow")
     data object InvalidWorkflow : AdvancedAudioExecutionException("Advanced Audio API workflow JSON is invalid")
     data object InvalidConfiguration : AdvancedAudioExecutionException("Advanced Audio API configuration is invalid")
+    data object NoSpeechInRecording : AdvancedAudioExecutionException("No speech detected")
+    class AudioPreparationFailed(message: String) : AdvancedAudioExecutionException(message)
     data class UnexpectedStatus(override val statusCode: Int) :
         AdvancedAudioExecutionException("Advanced Audio API request returned HTTP $statusCode")
 
@@ -894,6 +905,8 @@ sealed class AdvancedAudioExecutionException(
         MissingWorkflow,
         InvalidWorkflow,
         InvalidConfiguration,
+        NoSpeechInRecording,
+        is AudioPreparationFailed,
         -> false
     }
 }

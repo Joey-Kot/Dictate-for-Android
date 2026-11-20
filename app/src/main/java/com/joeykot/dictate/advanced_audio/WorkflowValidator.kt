@@ -867,6 +867,10 @@ object WorkflowValidator {
 
     private fun stageTransfersLocalAudio(stage: HttpStage): Boolean = stageHasAudioFile(stage) || stageHasRawAudio(stage)
 
+    internal fun sendsLocalAudio(stage: HttpStage): Boolean =
+        stageTransfersLocalAudio(stage) || stageReferencesAudio(stage, AudioPlaceholder.BASE64) ||
+            stageReferencesAudio(stage, AudioPlaceholder.DATA_URI)
+
     private fun stageReferencesAudio(stage: HttpStage, wanted: AudioPlaceholder?): Boolean =
         templateReferencesAudio(stage.url, wanted) ||
             stage.query.values.any { templateReferencesAudio(it, wanted) } ||

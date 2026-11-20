@@ -28,6 +28,24 @@ data class RetryConfig(
     }
 }
 
+data class VadConfig(
+    val enabled: Boolean = false,
+    val paddingMs: Int = DEFAULT_PADDING_MS,
+    val startThreshold: Double = DEFAULT_START_THRESHOLD,
+) {
+    fun validate(): List<String> = buildList {
+        if (paddingMs !in PADDING_RANGE_MS) add(AppStrings.get(R.string.vad_invalid_padding, "VAD padding must be between 0 and 1000 ms"))
+        if (startThreshold !in THRESHOLD_RANGE) add(AppStrings.get(R.string.vad_invalid_threshold, "VAD start threshold must be between 0.5 and 1.0"))
+    }
+
+    companion object {
+        const val DEFAULT_PADDING_MS = 100
+        const val DEFAULT_START_THRESHOLD = 0.6
+        val PADDING_RANGE_MS = 0..1000
+        val THRESHOLD_RANGE = 0.5..1.0
+    }
+}
+
 /**
  * Global controls for splitting a completed, non-realtime recording into
  * independent recognition requests. The values remain valid even while the
@@ -192,6 +210,7 @@ data class AppSettings(
     val postProcessing: PostProcessingConfig = PostProcessingConfig(),
     val advancedAudio: AdvancedAudioConfig = AdvancedAudioConfig(),
     val language: AppLanguage = AppLanguage.ENGLISH,
+    val vad: VadConfig = VadConfig(),
 )
 
 data class RuntimeSettings(

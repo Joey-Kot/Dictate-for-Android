@@ -10,6 +10,7 @@ import com.joeykot.dictate.DictateApplication
 import com.joeykot.dictate.accessibility.TextDelivery
 import com.joeykot.dictate.accessibility.DictateAccessibilityService
 import com.joeykot.dictate.advanced_audio.AdvancedAudioClient
+import com.joeykot.dictate.advanced_audio.AdvancedAudioExecutionException
 import com.joeykot.dictate.advanced_audio.AdvancedAudioWorkflow
 import com.joeykot.dictate.advanced_audio.AdvancedAudioWorkflowCodec
 import com.joeykot.dictate.advanced_audio.RealtimeSessionRecognition
@@ -17,9 +18,12 @@ import com.joeykot.dictate.advanced_audio.RealtimeWorkflow
 import com.joeykot.dictate.advanced_audio.RuntimeTemplateValues
 import com.joeykot.dictate.advanced_audio.WorkflowValidator
 import com.joeykot.dictate.advanced_audio.http.AdvancedCancellationSource
+import com.joeykot.dictate.advanced_audio.http.AdvancedCancellationToken
+import com.joeykot.dictate.advanced_audio.http.HttpTransportException
 import com.joeykot.dictate.advanced_audio.remote_audio.RemoteAudioConfigValidator
 import com.joeykot.dictate.audio.AudioEncodingPlan
 import com.joeykot.dictate.audio.AudioTranscoder
+import com.joeykot.dictate.audio.transcodeRecording
 import com.joeykot.dictate.audio.AudioTranscoderSegmentMediaEncoder
 import com.joeykot.dictate.audio.CancellableSegmentMediaEncoder
 import com.joeykot.dictate.audio.PcmCaptureTee
@@ -839,10 +843,13 @@ class VoiceJobController(
         }
         job.workerFuture = worker.submit {
             if (!isCurrent(jobId)) return@submit
-            val result = transcoder.transcode(jobId, rawFile, rawFormat, output, plan)
+            val result = transcoder.transcodeRecording(jobId, rawFile, rawFormat, output, plan, runtime.app.vad) {
+                !isCurrent(jobId)
+            }
             mainHandler.post {
                 if (!isCurrent(jobId)) return@post
                 when (result) {
+                    AudioTranscoder.RecordingResult.NoSpeech -> completeNoSpeech(jobId, locallyDetected = true)
                     is AudioTranscoder.Result.Success -> startRequest(jobId)
                     is AudioTranscoder.Result.Failure -> finishFailure(jobId, result.message)
                     AudioTranscoder.Result.Cancelled -> Unit
@@ -952,6 +959,9 @@ class VoiceJobController(
             mimeType = requireNotNull(job.encodingPlan).mimeType,
             retry = runtime.app.retry,
             onDiagnostic = { event -> logAdvancedDiagnostic(job.id, null, event) },
+            prepareAudioForRetry = if (runtime.app.vad.enabled) {
+                { prepareAdvancedAudioRetry(job, runtime, output, source.token) }
+            } else null,
         )
         job.workerFuture = worker.submit {
             if (!isCurrent(job.id)) return@submit
@@ -959,6 +969,24 @@ class VoiceJobController(
             mainHandler.post {
                 if (isCurrent(job.id)) handleAdvancedRequestResult(job.id, result)
             }
+        }
+    }
+
+    private fun prepareAdvancedAudioRetry(
+        job: ActiveJob,
+        runtime: RuntimeSettings,
+        output: File,
+        cancellation: AdvancedCancellationToken,
+    ): Boolean = cancellation.onCancellation { transcoder.cancelRunning(job.id) }.use {
+        val result = transcoder.transcodeRecording(
+            job.id, requireNotNull(job.rawFile), requireNotNull(job.rawFormat), output,
+            requireNotNull(job.encodingPlan), runtime.app.vad,
+        ) { cancellation.isCancelled() || !isCurrent(job.id) }
+        when (result) {
+            is AudioTranscoder.Result.Success -> true
+            AudioTranscoder.RecordingResult.NoSpeech -> false
+            AudioTranscoder.Result.Cancelled -> throw HttpTransportException.Cancelled()
+            is AudioTranscoder.Result.Failure -> throw AdvancedAudioExecutionException.AudioPreparationFailed(result.message)
         }
     }
 
@@ -1398,6 +1426,7 @@ class VoiceJobController(
                                 batchCancellation.token,
                             )
                             when (response) {
+                                AdvancedAudioClient.Result.LocalNoSpeech -> SegmentedUploadBatchRunner.TaskResult.Success("")
                                 is AdvancedAudioClient.Result.Success -> {
                                     successes[item.index] = response
                                     SegmentedUploadBatchRunner.TaskResult.Success(response.text)
@@ -1603,15 +1632,19 @@ class VoiceJobController(
         }
     }
 
-    /** A completed remote ASR request can legitimately contain no recognizable words. */
-    private fun completeNoSpeech(jobId: Long, statusCode: Int? = null, elapsedMillis: Long? = null) {
+    private fun completeNoSpeech(
+        jobId: Long,
+        statusCode: Int? = null,
+        elapsedMillis: Long? = null,
+        locallyDetected: Boolean = false,
+    ) {
         val job = activeJob?.takeIf { it.id == jobId } ?: return
         val message = AppStrings.get(R.string.runtime_no_speech_detected, "No speech detected")
         if (job.mode.connectionTest) {
             completeJob(
                 jobId,
                 ConnectionTestResult(
-                    success = true,
+                    success = !locallyDetected,
                     statusCode = statusCode,
                     elapsedMillis = elapsedMillis,
                     message = message,
@@ -2001,7 +2034,12 @@ class VoiceJobController(
                     job.retryFuture = scheduler.schedule(
                         {
                             mainHandler.post {
-                                if (isCurrent(jobId)) startRequest(jobId)
+                                if (!isCurrent(jobId)) return@post
+                                if (!job.mode.postProcessing && runtime.app.vad.enabled) {
+                                    beginTranscode(jobId)
+                                } else {
+                                    startRequest(jobId)
+                                }
                             }
                         },
                         delay,
@@ -2044,6 +2082,7 @@ class VoiceJobController(
         val job = activeJob?.takeIf { it.id == jobId } ?: return
         val runtime = job.runtimeSettings ?: return
         when (result) {
+            AdvancedAudioClient.Result.LocalNoSpeech -> completeNoSpeech(jobId, locallyDetected = true)
             is AdvancedAudioClient.Result.Success -> {
                 if (result.text.isBlank()) {
                     completeNoSpeech(jobId, result.statusCode, result.elapsedMillis)
@@ -2216,7 +2255,8 @@ class VoiceJobController(
             }
             JobState.TRANSCODING -> {
                 if (!job.segmentedUploadInProgress.get() && job.recordingClosed && job.outputFile != null) {
-                    transcoder.cancel(job.id)
+                    // The job ID probe covers analysis, copying and the gap between FFmpeg processes.
+                    transcoder.cancelRunning(job.id)
                 }
                 if (job.mode == JobMode.VOICE && !job.recordingClosed) {
                     pendingPreserveAfterRecorderStops.add(job.id)
@@ -2408,7 +2448,8 @@ class VoiceJobController(
         val errors = (
             runtime.app.audio.validate() +
                 runtime.app.retry.validate() +
-                runtime.app.segmentedUpload.validate()
+                runtime.app.segmentedUpload.validate() +
+                runtime.app.vad.validate()
             ).toMutableList()
         if (runtime.app.advancedAudio.enabled) {
             val config = runtime.app.advancedAudio

@@ -55,6 +55,7 @@ import com.joeykot.dictate.model.OverlayPalette
 import com.joeykot.dictate.model.ProviderConfig
 import com.joeykot.dictate.model.RetryConfig
 import com.joeykot.dictate.model.RuntimeSettings
+import com.joeykot.dictate.model.VadConfig
 import com.joeykot.dictate.model.SegmentedUploadConfig
 import com.joeykot.dictate.settings.SettingsRepository
 import com.joeykot.dictate.util.AccessibilityStatus
@@ -104,6 +105,9 @@ class MainActivity : Activity() {
     private lateinit var retryEnabled: Switch
     private lateinit var maxRetriesInput: EditText
     private lateinit var initialBackoffInput: EditText
+    private lateinit var vadEnabled: Switch
+    private lateinit var vadPaddingInput: EditText
+    private lateinit var vadThresholdInput: EditText
     private lateinit var segmentedUploadEnabled: Switch
     private lateinit var maximumSegmentLengthInput: EditText
     private lateinit var minimumPauseDurationInput: EditText
@@ -455,6 +459,20 @@ class MainActivity : Activity() {
         bitrateRow = labeledRow(getString(R.string.main_bitrate), bitrateSpinner)
         addView(bitrateRow)
 
+        vadPaddingInput = numericEditText()
+        vadThresholdInput = decimalEditText().apply {
+            keyListener = android.text.method.DigitsKeyListener.getInstance("0123456789.,")
+            setRawInputType(InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL)
+        }
+        vadEnabled = Switch(this@MainActivity).apply {
+            text = getString(R.string.vad_enabled)
+            setOnCheckedChangeListener { _, enabled -> setVadFieldsEnabled(enabled) }
+        }
+        addView(vadEnabled)
+        addView(labeledRow(getString(R.string.vad_padding), vadPaddingInput))
+        addView(labeledRow(getString(R.string.vad_threshold), vadThresholdInput))
+        addView(TextView(this@MainActivity).apply { text = getString(R.string.vad_help) })
+
         codecSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (!loadingForm && !linkingAudio) {
@@ -722,6 +740,10 @@ class MainActivity : Activity() {
         retryEnabled.isChecked = settings.retry.enabled
         maxRetriesInput.setText(settings.retry.maxRetries.toString())
         initialBackoffInput.setText(settings.retry.initialBackoffSeconds.toString())
+        vadEnabled.isChecked = settings.vad.enabled
+        vadPaddingInput.setText(settings.vad.paddingMs.toString())
+        vadThresholdInput.setText(settings.vad.startThreshold.toString())
+        setVadFieldsEnabled(settings.vad.enabled)
         segmentedUploadEnabled.isChecked = settings.segmentedUpload.enabled
         maximumSegmentLengthInput.setText(settings.segmentedUpload.maximumSegmentLengthSeconds.toString())
         minimumPauseDurationInput.setText(settings.segmentedUpload.minimumPauseDurationMillis.toString())
@@ -769,6 +791,13 @@ class MainActivity : Activity() {
                     ?: throw IllegalArgumentException(getString(R.string.main_max_retries_integer)),
                 initialBackoffSeconds = initialBackoffInput.text.toString().toDoubleOrNull()
                     ?: throw IllegalArgumentException(getString(R.string.main_backoff_number)),
+            ),
+            vad = VadConfig(
+                enabled = vadEnabled.isChecked,
+                paddingMs = vadPaddingInput.text.toString().toIntOrNull()
+                    ?: throw IllegalArgumentException(getString(R.string.vad_invalid_padding)),
+                startThreshold = readVadThreshold()
+                    ?: throw IllegalArgumentException(getString(R.string.vad_invalid_threshold)),
             ),
             segmentedUpload = SegmentedUploadConfig(
                 enabled = segmentedUploadEnabled.isChecked,
@@ -1322,6 +1351,24 @@ class MainActivity : Activity() {
         setColorSwatch(recordingPreview, palette.recordingColor)
         setColorSwatch(pausedPreview, palette.pausedColor)
         setColorSwatch(processingPreview, palette.processingColor)
+    }
+
+    private fun readVadThreshold(): Double? = vadThresholdInput.text.toString().replace(',', '.').toDoubleOrNull()
+
+    private fun setVadFieldsEnabled(enabled: Boolean) {
+        if (!enabled && !loadingForm) {
+            val saved = settingsRepository.get().vad
+            val padding = vadPaddingInput.text.toString().toIntOrNull()
+            val threshold = readVadThreshold()
+            if (padding == null || padding !in VadConfig.PADDING_RANGE_MS) {
+                vadPaddingInput.setText(saved.paddingMs.toString())
+            }
+            if (threshold == null || threshold !in VadConfig.THRESHOLD_RANGE) {
+                vadThresholdInput.setText(saved.startThreshold.toString())
+            }
+        }
+        vadPaddingInput.isEnabled = enabled
+        vadThresholdInput.isEnabled = enabled
     }
 
     private fun updateSegmentedUploadUi() {

@@ -13,7 +13,11 @@ class AudioTranscoder(
     private val context: Context,
     private val diagnostics: Diagnostics,
 ) {
-    sealed interface Result {
+    sealed interface RecordingResult {
+        data object NoSpeech : RecordingResult
+    }
+
+    sealed interface Result : RecordingResult {
         data class Success(val output: File) : Result
         data class Failure(val message: String, val exitCode: Int? = null) : Result
         data object Cancelled : Result

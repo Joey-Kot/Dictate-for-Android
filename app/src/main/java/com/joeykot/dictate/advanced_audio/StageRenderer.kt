@@ -22,10 +22,14 @@ import java.util.Base64
  * the one delivery form that materialises the file in memory.
  */
 class WorkflowAudio(
-    val upload: PreparedAudioUpload,
+    upload: PreparedAudioUpload,
     val publicHttpsUrl: String? = null,
     val cloudUri: String? = null,
+    private val prepareAudioForRetry: (() -> Boolean)? = null,
 ) {
+    var upload: PreparedAudioUpload = upload
+        private set
+
     init {
         require(upload.file.isFile && upload.file.canRead()) { "Advanced audio file is unavailable" }
         require(upload.sizeBytes >= 0L) { "Advanced audio size is invalid" }
@@ -36,6 +40,13 @@ class WorkflowAudio(
         publicHttpsUrl = publicHttpsUrl,
         cloudUri = cloudUri,
     )
+
+    internal fun prepareForRetry(stage: HttpStage) {
+        val prepare = prepareAudioForRetry ?: return
+        if (!WorkflowValidator.sendsLocalAudio(stage)) return
+        if (!prepare()) throw AdvancedAudioExecutionException.NoSpeechInRecording
+        upload = upload.copy(sizeBytes = upload.file.length())
+    }
 
     fun templateValues(includeEncodedAudio: Boolean): AudioTemplateValues {
         val base = AudioTemplateValues(
@@ -64,13 +75,14 @@ class WorkflowAudio(
     companion object {
         const val MAX_BASE64_AUDIO_BYTES: Long = 16L * 1024L * 1024L
 
-        fun fromFile(file: File, mimeType: String): WorkflowAudio = WorkflowAudio(
+        fun fromFile(file: File, mimeType: String, prepareAudioForRetry: (() -> Boolean)? = null): WorkflowAudio = WorkflowAudio(
             PreparedAudioUpload(
                 file = file,
                 filename = file.name.ifBlank { "audio" },
                 mimeType = mimeType,
                 sizeBytes = file.length(),
             ),
+            prepareAudioForRetry = prepareAudioForRetry,
         )
     }
 }

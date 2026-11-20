@@ -8,7 +8,7 @@ val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orNull
 val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull
 
 // Update this version for each release; CI and local builds use the same value.
-val appVersionName = "1.0.0"
+val appVersionName = "1.0.1"
 val versionParts = appVersionName.split(".").map { it.toIntOrNull() }
 require(versionParts.size == 3 && versionParts.all { it != null }) {
     "appVersionName must use the numeric major.minor.patch format."
@@ -86,6 +86,9 @@ android {
         )
     }
 
+    // Optional host JNI integration tests load the host build, in the JVM test source set only.
+    sourceSets.getByName("test").jniLibs.srcDir("build/rust-vad/release")
+
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
@@ -97,6 +100,24 @@ android {
         // arm64-only is an explicit first-release product constraint.
         disable += "ChromeOsAbiSupport"
     }
+}
+
+val buildVad = tasks.register<Exec>("buildVad") {
+    group = "build"
+    description = "Builds the arm64 Earshot VAD JNI library."
+    val native = rootProject.layout.projectDirectory.dir("native/vad")
+    val script = rootProject.layout.projectDirectory.file("scripts/build-android-vad.sh")
+    inputs.files(native.file("Cargo.toml"), native.file("Cargo.lock"), script)
+    inputs.dir(native.dir("src"))
+    inputs.property("rustFlags", providers.environmentVariable("RUSTFLAGS").orElse(""))
+    inputs.property("encodedRustFlags", providers.environmentVariable("CARGO_ENCODED_RUSTFLAGS").orElse(""))
+    inputs.property("targetRustFlags", providers.environmentVariable("CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS").orElse(""))
+    outputs.file(layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libdictate_vad.so"))
+    commandLine("bash", script.asFile.absolutePath)
+}
+
+tasks.matching { it.name == "mergeDebugJniLibFolders" || it.name == "mergeReleaseJniLibFolders" }.configureEach {
+    dependsOn(buildVad)
 }
 
 val ffmpegBuildScript = rootProject.layout.projectDirectory.file("scripts/build-android-ffmpeg.sh")

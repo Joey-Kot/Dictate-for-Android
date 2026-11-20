@@ -114,4 +114,11 @@
     <string name="main_about_license">ライセンス</string>
     <string name="main_about_repo">リポジトリ</string>
     <string name="main_about_version">バージョン</string>
+    <string name="vad_enabled">音声区間検出（VAD）</string>
+    <string name="vad_padding">VAD の余白（ミリ秒）</string>
+    <string name="vad_threshold">VAD の開始しきい値</string>
+    <string name="vad_help">一括アップロードでは元の録音から発話のない区間を除きます。分割アップロードとリアルタイム文字起こしでは音声全体を使用します。</string>
+    <string name="vad_invalid_padding">VAD の余白は 0～1000 ミリ秒の整数で指定してください</string>
+    <string name="vad_invalid_threshold">VAD の開始しきい値は 0.5～1.0 で指定してください</string>
+    <string name="vad_failed">VAD による音声処理に失敗しました：%1$s</string>
 </resources>

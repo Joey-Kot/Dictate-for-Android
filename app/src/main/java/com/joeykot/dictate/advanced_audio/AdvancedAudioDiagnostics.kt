@@ -58,6 +58,7 @@ internal class AdvancedAudioDiagnostics(private val sink: ((HttpDiagnosticEvent)
 
     fun complete(result: AdvancedAudioClient.Result) {
         val summary = when (result) {
+            AdvancedAudioClient.Result.LocalNoSpeech -> "outcome=no_speech source=local"
             is AdvancedAudioClient.Result.Success ->
                 "outcome=success status=${result.statusCode} textChars=${result.text.length} noSpeech=${result.text.isBlank()}"
             is AdvancedAudioClient.Result.Failure ->

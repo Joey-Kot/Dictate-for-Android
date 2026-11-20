@@ -32,7 +32,7 @@ class SegmentedUploadSettingsRepositoryTest {
     }
 
     @Test
-    fun segmentedUploadRoundTripsThroughStorageAndSchemaEightExport() {
+    fun segmentedUploadRoundTripsThroughStorageAndExport() {
         val repository = SettingsRepository(context)
         val expected = SegmentedUploadConfig(
             enabled = true,
@@ -45,7 +45,7 @@ class SegmentedUploadSettingsRepositoryTest {
 
         assertEquals(expected, SettingsRepository(context).get().segmentedUpload)
         val exported = JSONObject(repository.exportJson())
-        assertEquals(8, exported.getInt("schemaVersion"))
+        assertEquals(9, exported.getInt("schemaVersion"))
         assertEquals(true, exported.getJSONObject("segmentedUpload").getBoolean("enabled"))
         assertEquals(450, exported.getJSONObject("segmentedUpload").getInt("maximumSegmentLengthSeconds"))
         assertEquals(850, exported.getJSONObject("segmentedUpload").getInt("minimumPauseDurationMillis"))

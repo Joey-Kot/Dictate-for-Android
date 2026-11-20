@@ -21,6 +21,10 @@ import com.joeykot.dictate.model.AudioContainer
 import com.joeykot.dictate.model.JobState
 import com.joeykot.dictate.model.Pcm16Format
 import com.joeykot.dictate.model.RetryConfig
+import com.joeykot.dictate.model.ProviderConfig
+import com.joeykot.dictate.model.SegmentedUploadConfig
+import com.joeykot.dictate.model.VadConfig
+import com.joeykot.dictate.settings.TestAndroidKeyStore
 import com.joeykot.dictate.model.RuntimeSettings
 import com.joeykot.dictate.network.TranscriptionClient
 import org.json.JSONObject
@@ -71,6 +75,7 @@ class AdvancedAudioJobTest {
     private lateinit var serverExecutor: ExecutorService
     private val requestCount = AtomicInteger()
     private val requestLines = CopyOnWriteArrayList<String>()
+    private val requestBodyLengths = CopyOnWriteArrayList<Int>()
     private val serverErrors = CopyOnWriteArrayList<Throwable>()
 
     @Volatile
@@ -90,6 +95,7 @@ class AdvancedAudioJobTest {
                         socket.soTimeout = 5_000
                         val request = socket.readRequest()
                         requestLines += request.requestLine
+                        requestBodyLengths += request.contentLength
                         requestCount.incrementAndGet()
                         onRequest(socket)
                     }
@@ -169,6 +175,110 @@ class AdvancedAudioJobTest {
         assertEquals("No speech detected", results.single().message)
         assertEquals(1, requestCount.get())
         assertEquals("existing clipboard", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+    }
+
+    private fun withVadAudio(block: () -> Unit) {
+        val ffmpeg = System.getenv("DICTATE_VAD_TEST_FFMPEG")
+        org.junit.Assume.assumeNotNull(ffmpeg)
+        val nativeDir = java.nio.file.Files.createTempDirectory("vad-job-test-").toFile()
+        val appInfo = application.applicationInfo
+        val previous = appInfo.nativeLibraryDir
+        TestAndroidKeyStore.install()
+        try {
+            java.nio.file.Files.createSymbolicLink(File(nativeDir, "libffmpeg.so").toPath(), File(checkNotNull(ffmpeg)).toPath())
+            appInfo.nativeLibraryDir = nativeDir.absolutePath
+            block()
+        } finally {
+            appInfo.nativeLibraryDir = previous
+            TestAndroidKeyStore.remove()
+            nativeDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun vadNoSpeechSkipsAsrAndRetranscriptionHonorsSegmentation() = withVadAudio {
+        onRequest = { socket -> socket.reply(200, """{"text":""}""") }
+        val store = application.audioFileStore
+        val input = store.newRawFile(1000).also { ConnectivityTestAudio.writeTo(application, it) }
+        val original = input.readBytes()
+        val recording = checkNotNull(store.promoteToLast(input, Pcm16Format.LEGACY_MONO_16_KHZ))
+        val settings = AppSettings(
+            audio = AudioConfig(codec = AudioCodec.PCM, container = AudioContainer.S16LE, bitDepth = 16, sampleRate = 16000),
+            provider = ProviderConfig(baseUrl = "http://127.0.0.1:${server.localPort}", model = "test"),
+            vad = VadConfig(enabled = true, startThreshold = 1.0),
+        )
+        fun resend(config: AppSettings) {
+            executor("worker").submit { application.settingsRepository.save(config, "test-key") }.get()
+            controller.handleLongPress(JobState.IDLE)
+            await { controller.currentState().state == JobState.IDLE }
+            assertTrue(application.diagnostics.snapshot(), serverErrors.isEmpty())
+        }
+
+        // The threshold of 1.0 rejects the bundled spoken fixture. A local skip must
+        // not report that a connection was tested.
+        val testResults = mutableListOf<VoiceJobController.ConnectionTestResult>()
+        assertTrue(controller.testConnection(RuntimeSettings(settings, "test-key")) { testResults += it })
+        await { testResults.isNotEmpty() }
+        assertFalse(testResults.single().success)
+        assertEquals(0, requestCount.get())
+
+        resend(settings)
+        assertEquals("No speech detected", controller.currentState().message)
+        assertEquals(0, requestCount.get())
+        resend(settings.copy(vad = VadConfig(enabled = true)))
+        assertEquals(1, requestCount.get())
+        resend(settings.copy(
+            vad = VadConfig(enabled = true),
+            advancedAudio = AdvancedAudioConfig(enabled = true, workflowJson = requestWorkflow()),
+        ))
+        assertEquals("POST /advanced HTTP/1.1", requestLines.last())
+        assertEquals(2, requestCount.get())
+        resend(settings.copy(segmentedUpload = SegmentedUploadConfig(enabled = true)))
+        assertEquals(3, requestCount.get())
+        assertNotNull(store.lastRecordingSegmentedUploadSnapshot(recording))
+        resend(settings)
+        assertEquals(4, requestCount.get())
+        assertTrue(original.contentEquals(recording.file.readBytes()))
+    }
+
+    @Test
+    fun vadAudioRetriesReadTheOriginalAgain() = withVadAudio {
+        val store = application.audioFileStore
+        val input = store.newRawFile(1000).also { ConnectivityTestAudio.writeTo(application, it) }
+        val word = input.readBytes()
+        val recording = checkNotNull(store.promoteToLast(input, Pcm16Format.LEGACY_MONO_16_KHZ))
+        val settings = AppSettings(
+            audio = AudioConfig(codec = AudioCodec.PCM, container = AudioContainer.S16LE, sampleRate = 16_000),
+            provider = ProviderConfig(baseUrl = "http://127.0.0.1:${server.localPort}", model = "test"),
+            retry = RetryConfig(enabled = true, maxRetries = 1, initialBackoffSeconds = 0.1),
+            vad = VadConfig(enabled = true),
+        )
+        for (advanced in listOf(false, true)) {
+            val config = settings.copy(advancedAudio = AdvancedAudioConfig(enabled = advanced, workflowJson = requestWorkflow()))
+            executor("worker").submit { application.settingsRepository.save(config, "test-key") }.get()
+            for (silence in listOf(false, true)) {
+                recording.file.writeBytes(word)
+                val before = requestCount.get()
+                onRequest = { socket ->
+                    if (requestCount.get() == before + 1) {
+                        // Change only the raw source after the first request has read its complete body.
+                        recording.file.writeBytes(if (silence) ByteArray(word.size) else word + ByteArray(32_000) + word)
+                        socket.reply(503, """{"error":"retry"}""")
+                    } else {
+                        socket.reply(200, """{"text":""}""")
+                    }
+                }
+                controller.handleLongPress(JobState.IDLE)
+                await { controller.currentState().state == JobState.IDLE }
+                if (silence) {
+                    assertEquals(before + 1, requestCount.get())
+                    assertEquals("No speech detected", controller.currentState().message)
+                } else {
+                    assertEquals(before + 2, requestCount.get())
+                    assertTrue(requestBodyLengths[before + 1] > requestBodyLengths[before])
+                }
+            }
+        }
     }
 
     @Test
@@ -664,7 +774,7 @@ class AdvancedAudioJobTest {
         fun releaseWorker() = release.countDown()
     }
 
-    private data class CapturedRequest(val requestLine: String)
+    private data class CapturedRequest(val requestLine: String, val contentLength: Int)
 
     private fun Socket.readRequest(): CapturedRequest {
         val input = getInputStream()
@@ -692,7 +802,7 @@ class AdvancedAudioJobTest {
                 offset += count
             }
         }
-        return CapturedRequest(headerText.lineSequence().first())
+        return CapturedRequest(headerText.lineSequence().first(), contentLength)
     }
 
     private fun Socket.reply(status: Int, body: String) {

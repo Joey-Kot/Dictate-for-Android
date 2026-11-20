@@ -34,8 +34,6 @@ jobs:
           java-version: '17'
           check-latest: true
           cache: gradle
-      - name: Block compromised eMudhra certificates in the build JDK
-        run: python3 scripts/harden-jdk-certificates.py "$JAVA_HOME"
       - uses: gradle/actions/wrapper-validation@v5
       - uses: android-actions/setup-android@v4
         with:
@@ -47,6 +45,10 @@ jobs:
         with:
           path: .cache/ffmpeg-downloads
           key: ffmpeg-downloads-${{ hashFiles('scripts/build-android-ffmpeg.sh') }}
+      - name: Prepare Rust for Android and test VAD
+        run: |
+          rustup target add aarch64-linux-android
+          cargo test --locked --manifest-path native/vad/Cargo.toml
       - name: Build arm64 FFmpeg CLI
         env:
           DICTATE_NATIVE_BUILD_DIR: ${{ runner.temp }}/dictate-ffmpeg-tmp

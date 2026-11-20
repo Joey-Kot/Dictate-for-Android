@@ -17,6 +17,7 @@ import com.joeykot.dictate.model.AudioCodec
 import com.joeykot.dictate.model.AudioConfig
 import com.joeykot.dictate.model.AudioContainer
 import com.joeykot.dictate.model.PromptConfig
+import com.joeykot.dictate.model.VadConfig
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -183,6 +184,66 @@ class MainActivityTest {
             layout(root)
             shadowOf(Looper.getMainLooper()).idle()
             assertTrue(recordingColor.isShown)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun vadToggleRetainsEditedValuesWhenDisabled() {
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val root = controller.get().window.decorView
+            val toggle = findTextView(root, "启用语音活动检测（VAD）") as Switch
+            val padding = editTextForLabel(root, "VAD 边界填充（毫秒）")
+            val threshold = editTextForLabel(root, "VAD 启动阈值")
+            assertFalse(toggle.isChecked)
+            assertFalse(padding.isEnabled)
+            assertFalse(threshold.isEnabled)
+            assertEquals("100", padding.text.toString())
+            assertEquals("0.6", threshold.text.toString())
+            toggle.performClick()
+            assertTrue(padding.isEnabled && threshold.isEnabled)
+            padding.setText("150")
+            threshold.setText("0.75")
+            toggle.performClick()
+            (findTextView(root, "保存设置") as Button).performClick()
+            assertTrue(waitUntil {
+                application.settingsRepository.get().vad == VadConfig(false, 150, 0.75)
+            })
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun disablingVadRestoresOnlyInvalidFieldsAndAllowsSaving() {
+        application.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean("vad.enabled", true)
+            .putInt("vad.padding_ms", 190)
+            .putLong("vad.start_threshold", 0.8.toBits())
+            .commit()
+        val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            val root = controller.get().window.decorView
+            val toggle = findTextView(root, "启用语音活动检测（VAD）") as Switch
+            val padding = editTextForLabel(root, "VAD 边界填充（毫秒）")
+            val threshold = editTextForLabel(root, "VAD 启动阈值")
+            val save = findTextView(root, "保存设置") as Button
+            padding.setText("220")
+            threshold.setText("")
+            toggle.performClick()
+            assertEquals("0.8", threshold.text.toString())
+            save.performClick()
+            assertTrue(waitUntil { application.settingsRepository.get().vad == VadConfig(false, 220, 0.8) })
+
+            toggle.performClick()
+            padding.setText("1001")
+            threshold.setText("0,72")
+            toggle.performClick()
+            assertEquals("220", padding.text.toString())
+            save.performClick()
+            assertTrue(waitUntil { application.settingsRepository.get().vad == VadConfig(false, 220, 0.72) })
         } finally {
             controller.pause().stop().destroy()
         }

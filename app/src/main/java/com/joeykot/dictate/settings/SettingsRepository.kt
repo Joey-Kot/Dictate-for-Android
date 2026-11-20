@@ -26,6 +26,7 @@ import com.joeykot.dictate.model.PromptConfig
 import com.joeykot.dictate.model.ProviderConfig
 import com.joeykot.dictate.model.RetryConfig
 import com.joeykot.dictate.model.RuntimeSettings
+import com.joeykot.dictate.model.VadConfig
 import com.joeykot.dictate.model.SegmentedUploadConfig
 import com.joeykot.dictate.network.AdditionalParameters
 import com.joeykot.dictate.network.BaseUrl
@@ -90,6 +91,11 @@ class SettingsRepository(context: Context) {
                         java.lang.Double.doubleToRawLongBits(0.5),
                     ),
                 ),
+            ),
+            vad = VadConfig(
+                enabled = preferences.getBoolean(KEY_VAD_ENABLED, false),
+                paddingMs = preferences.getInt(KEY_VAD_PADDING_MS, VadConfig.DEFAULT_PADDING_MS),
+                startThreshold = Double.fromBits(preferences.getLong(KEY_VAD_THRESHOLD, VadConfig.DEFAULT_START_THRESHOLD.toBits())),
             ),
             segmentedUpload = SegmentedUploadConfig(
                 enabled = preferences.getBoolean(KEY_SEGMENTED_UPLOAD_ENABLED, false),
@@ -222,6 +228,9 @@ class SettingsRepository(context: Context) {
                 KEY_INITIAL_BACKOFF,
                 java.lang.Double.doubleToRawLongBits(normalized.retry.initialBackoffSeconds),
             )
+            .putBoolean(KEY_VAD_ENABLED, normalized.vad.enabled)
+            .putInt(KEY_VAD_PADDING_MS, normalized.vad.paddingMs)
+            .putLong(KEY_VAD_THRESHOLD, normalized.vad.startThreshold.toBits())
             .putBoolean(KEY_SEGMENTED_UPLOAD_ENABLED, normalized.segmentedUpload.enabled)
             .putInt(
                 KEY_SEGMENTED_UPLOAD_MAXIMUM_SEGMENT_LENGTH_SECONDS,
@@ -314,6 +323,7 @@ class SettingsRepository(context: Context) {
         allowMissingAdvancedAudioSecrets: Boolean = false,
     ): List<String> = buildList {
         addAll(settings.audio.validate())
+        addAll(settings.vad.validate())
         addAll(settings.retry.validate())
         addAll(settings.segmentedUpload.validate())
         addAll(settings.interaction.validate())
@@ -411,7 +421,7 @@ class SettingsRepository(context: Context) {
     fun exportJson(): String {
         val settings = get()
         val root = JSONObject()
-        root.put("schemaVersion", 8)
+        root.put("schemaVersion", 9)
         root.put("language", settings.language.tag)
         root.put(
             "audioOutput",
@@ -443,6 +453,13 @@ class SettingsRepository(context: Context) {
                 .put("enabled", settings.retry.enabled)
                 .put("maxRetries", settings.retry.maxRetries)
                 .put("initialBackoffSeconds", settings.retry.initialBackoffSeconds),
+        )
+        root.put(
+            "vad",
+            JSONObject()
+                .put("enabled", settings.vad.enabled)
+                .put("paddingMs", settings.vad.paddingMs)
+                .put("startThreshold", settings.vad.startThreshold),
         )
         root.put(
             "segmentedUpload",
@@ -614,6 +631,14 @@ class SettingsRepository(context: Context) {
                     "retry.initialBackoffSeconds",
                 ),
             ),
+            vad = if (schemaVersion >= 9) {
+                val vad = requiredObject(root, "vad", "vad")
+                VadConfig(
+                    enabled = requiredBoolean(vad, "enabled", "vad.enabled"),
+                    paddingMs = requiredInt(vad, "paddingMs", "vad.paddingMs"),
+                    startThreshold = requiredDouble(vad, "startThreshold", "vad.startThreshold"),
+                )
+            } else VadConfig(),
             segmentedUpload = segmentedUploadObject?.let { segmentedUpload ->
                 SegmentedUploadConfig(
                     enabled = requiredBoolean(segmentedUpload, "enabled", "segmentedUpload.enabled"),
@@ -879,6 +904,9 @@ class SettingsRepository(context: Context) {
         const val KEY_RETRY_ENABLED = "retry.enabled"
         const val KEY_MAX_RETRIES = "retry.max_retries"
         const val KEY_INITIAL_BACKOFF = "retry.initial_backoff"
+        const val KEY_VAD_ENABLED = "vad.enabled"
+        const val KEY_VAD_PADDING_MS = "vad.padding_ms"
+        const val KEY_VAD_THRESHOLD = "vad.start_threshold"
         const val KEY_SEGMENTED_UPLOAD_ENABLED = "segmented_upload.enabled"
         const val KEY_SEGMENTED_UPLOAD_MAXIMUM_SEGMENT_LENGTH_SECONDS = "segmented_upload.maximum_segment_length_seconds"
         const val KEY_SEGMENTED_UPLOAD_MINIMUM_PAUSE_DURATION_MILLIS = "segmented_upload.minimum_pause_duration_millis"
@@ -895,7 +923,7 @@ class SettingsRepository(context: Context) {
         const val KEY_OVERLAY_X = "overlay.x"
         const val KEY_OVERLAY_Y = "overlay.y"
         const val LEGACY_DEFAULT_SAMPLE_RATE = 16_000
-        val SUPPORTED_SCHEMA_VERSIONS = setOf(1, 2, 3, 4, 5, 6, 7, 8)
+        val SUPPORTED_SCHEMA_VERSIONS = 1..9
         val RGB_HEX = Regex("#[0-9A-Fa-f]{6}")
     }
 }

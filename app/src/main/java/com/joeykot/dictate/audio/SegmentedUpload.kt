@@ -6,8 +6,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.util.concurrent.CancellationException
 import kotlin.math.abs
@@ -590,14 +588,13 @@ class SegmentedUploadPreparer(
             snapshot.plan.segments.forEachIndexed { index, interval ->
                 throwIfCancelled(request.cancellation)
                 val rawSegment = File(directory, "segment-${index.toString().padStart(6, '0')}.pcm")
-                copyPcmInterval(
+                copyPcmIntervals(
                     sourceFile = request.rawInput,
                     source = source,
                     inputFormat = request.inputFormat,
-                    interval = interval,
+                    intervals = sequenceOf(interval),
                     destination = rawSegment,
-                    cancellation = request.cancellation,
-                )
+                ) { throwIfCancelled(request.cancellation) }
                 throwIfCancelled(request.cancellation)
 
                 val media = File(directory, "segment-${index.toString().padStart(6, '0')}.${request.encodingPlan.extension}")
@@ -702,20 +699,6 @@ class SegmentedUploadPreparer(
     }
 }
 
-private data class PcmSource(
-    val bytes: Long,
-    val totalFrames: Long,
-)
-
-private fun inspectPcmSource(rawInput: File, inputFormat: Pcm16Format): PcmSource {
-    require(rawInput.isFile) { "Original PCM recording is missing" }
-    val bytes = rawInput.length()
-    require(bytes >= 0L && bytes % inputFormat.bytesPerFrame == 0L) {
-        "Original PCM recording does not end on a complete frame"
-    }
-    return PcmSource(bytes = bytes, totalFrames = bytes / inputFormat.bytesPerFrame)
-}
-
 private fun scanPcmFrames(
     rawInput: File,
     inputFormat: Pcm16Format,
@@ -757,50 +740,6 @@ private fun downmixFrame(bytes: ByteArray, offset: Int, channelCount: Int): Doub
     return sum / channelCount.toDouble()
 }
 
-private fun copyPcmInterval(
-    sourceFile: File,
-    source: PcmSource,
-    inputFormat: Pcm16Format,
-    interval: SourceInterval,
-    destination: File,
-    cancellation: SegmentedUploadCancellation,
-) {
-    require(interval.startFrame >= 0L && interval.endFrame > interval.startFrame) {
-        "Segment export interval is invalid"
-    }
-    require(interval.endFrame <= source.totalFrames) { "Segment export interval exceeds the PCM recording" }
-    throwIfCancelled(cancellation)
-    require(sourceFile.length() == source.bytes) { "PCM source changed before segment export" }
-    destination.parentFile?.mkdirs()
-    destination.delete()
-    val startByte = try {
-        Math.multiplyExact(interval.startFrame, inputFormat.bytesPerFrame.toLong())
-    } catch (error: ArithmeticException) {
-        throw IllegalArgumentException("Segment start offset overflow", error)
-    }
-    var remaining = try {
-        Math.multiplyExact(interval.frameCount, inputFormat.bytesPerFrame.toLong())
-    } catch (error: ArithmeticException) {
-        throw IllegalArgumentException("Segment length overflow", error)
-    }
-    val buffer = ByteArray(COPY_BUFFER_BYTES)
-    RandomAccessFile(sourceFile, "r").use { input ->
-        input.seek(startByte)
-        FileOutputStream(destination, false).use { output ->
-            while (remaining > 0L) {
-                throwIfCancelled(cancellation)
-                val requested = minOf(remaining, buffer.size.toLong()).toInt()
-                val read = input.read(buffer, 0, requested)
-                if (read <= 0) throw IllegalStateException("Original PCM recording ended while exporting a segment")
-                output.write(buffer, 0, read)
-                remaining -= read.toLong()
-            }
-            output.flush()
-        }
-    }
-    require(sourceFile.length() == source.bytes) { "PCM source changed while exporting a segment" }
-}
-
 private fun readFully(input: FileInputStream, buffer: ByteArray, byteCount: Int) {
     var offset = 0
     while (offset < byteCount) {
@@ -816,4 +755,3 @@ private fun throwIfCancelled(cancellation: SegmentedUploadCancellation) {
 
 private const val PCM16_NORMALIZATION = 32_768.0
 private const val DEFAULT_SCAN_BUFFER_FRAMES = 4_096
-private const val COPY_BUFFER_BYTES = 64 * 1_024

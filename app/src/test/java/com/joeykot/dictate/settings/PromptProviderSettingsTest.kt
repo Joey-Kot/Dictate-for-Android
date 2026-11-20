@@ -49,7 +49,7 @@ class PromptProviderSettingsTest {
         val prompts = PostProcessingProvider.entries.map { prompt.copy(id = it.id, provider = it) } + prompt.copy(provider = null)
         background { repository.savePrompts(prompts, prompts.associate { it.id to "private-${it.id}" }) }
         val json = repository.exportJson()
-        assertEquals(8, JSONObject(json).getInt("schemaVersion"))
+        assertEquals(9, JSONObject(json).getInt("schemaVersion"))
         assertFalse(json.contains("private-"))
         assertFalse(json.contains("apiKey"))
         val serializedProviders = JSONObject(json).getJSONObject("postProcessing").getJSONArray("prompts")
