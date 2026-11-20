@@ -119,6 +119,6 @@
     <string name="vad_threshold">VAD start threshold</string>
     <string name="vad_help">Trim non-speech before encoding or splitting non-realtime audio. Realtime transcription uses the full recording.</string>
     <string name="vad_invalid_padding">VAD padding must be between 0 and 1000 ms</string>
-    <string name="vad_invalid_threshold">VAD start threshold must be between 0.5 and 1.0</string>
+    <string name="vad_invalid_threshold">VAD start threshold must be between 0.3 and 1.0</string>
     <string name="vad_failed">Unable to prepare audio with VAD: %1$s</string>
 </resources>

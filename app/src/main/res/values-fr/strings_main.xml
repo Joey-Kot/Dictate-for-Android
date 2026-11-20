@@ -119,6 +119,6 @@
     <string name="vad_threshold">Seuil de déclenchement VAD</string>
     <string name="vad_help">Pour la transcription en différé, les passages parlés sont extraits avant l’encodage ou le découpage. La transcription en temps réel utilise tout l’enregistrement.</string>
     <string name="vad_invalid_padding">La marge VAD doit être comprise entre 0 et 1000 ms</string>
-    <string name="vad_invalid_threshold">Le seuil VAD doit être compris entre 0,5 et 1,0</string>
+    <string name="vad_invalid_threshold">Le seuil VAD doit être compris entre 0,3 et 1,0</string>
     <string name="vad_failed">Échec de la préparation audio avec la VAD : %1$s</string>
 </resources>

@@ -35,14 +35,14 @@ data class VadConfig(
 ) {
     fun validate(): List<String> = buildList {
         if (paddingMs !in PADDING_RANGE_MS) add(AppStrings.get(R.string.vad_invalid_padding, "VAD padding must be between 0 and 1000 ms"))
-        if (startThreshold !in THRESHOLD_RANGE) add(AppStrings.get(R.string.vad_invalid_threshold, "VAD start threshold must be between 0.5 and 1.0"))
+        if (startThreshold !in THRESHOLD_RANGE) add(AppStrings.get(R.string.vad_invalid_threshold, "VAD start threshold must be between 0.3 and 1.0"))
     }
 
     companion object {
         const val DEFAULT_PADDING_MS = 100
-        const val DEFAULT_START_THRESHOLD = 0.6
+        const val DEFAULT_START_THRESHOLD = 0.5
         val PADDING_RANGE_MS = 0..1000
-        val THRESHOLD_RANGE = 0.5..1.0
+        val THRESHOLD_RANGE = 0.3..1.0
     }
 }
 

@@ -119,6 +119,6 @@
     <string name="vad_threshold">VAD 启动阈值</string>
     <string name="vad_help">非实时转录先从原始录音中裁剪语音，再编码或分片。实时转录使用完整录音。</string>
     <string name="vad_invalid_padding">VAD 边界填充必须是 0 到 1000 毫秒之间的整数</string>
-    <string name="vad_invalid_threshold">VAD 启动阈值必须在 0.5 到 1.0 之间</string>
+    <string name="vad_invalid_threshold">VAD 启动阈值必须在 0.3 到 1.0 之间</string>
     <string name="vad_failed">VAD 音频处理失败：%1$s</string>
 </resources>

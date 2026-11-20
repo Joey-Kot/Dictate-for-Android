@@ -202,7 +202,7 @@ class MainActivityTest {
             assertFalse(padding.isEnabled)
             assertFalse(threshold.isEnabled)
             assertEquals("100", padding.text.toString())
-            assertEquals("0.6", threshold.text.toString())
+            assertEquals("0.5", threshold.text.toString())
             toggle.performClick()
             assertTrue(padding.isEnabled && threshold.isEnabled)
             padding.setText("150")

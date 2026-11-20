@@ -113,7 +113,7 @@ For non-real-time streaming models, configure optional segmented uploads for API
 You can enable “Voice Activity Detection (VAD)” in “Recording Settings.”
 
 - Before encoding or splitting the recording, the app detects speech segments at 16 kHz, cuts and joins those segments from the original recording at its original sample rate, then encodes the result according to the output settings.
-- Boundary padding defaults to 100 milliseconds (0–1000), and the activation threshold defaults to 0.6 (0.5–1.0). If no speech is detected, the upload is skipped and the original recording is retained. You can adjust the parameters and transcribe it again.
+- Boundary padding defaults to 100 milliseconds (0–1000), and the activation threshold defaults to 0.5 (0.3–1.0). If no speech is detected, the upload is skipped and the original recording is retained. You can adjust the parameters and transcribe it again.
 - Manual resend starts from the retained original PCM using current settings. An automatic segment retry reuses its encoded file. The app discards temporary audio and all segments when the batch finishes or is canceled. Realtime transcription uses the full recording.
 
 ### Audio encoding settings

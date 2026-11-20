@@ -44,7 +44,7 @@ class SettingsRepositoryAudioTest {
     @Test fun vadPersistsExactValuesAndDefaultsForOlderExports() {
         val repository = SettingsRepository(context)
         assertEquals(VadConfig(), repository.get().vad)
-        for (vad in listOf(VadConfig(true, 0, 0.5), VadConfig(false, 999, 0.87654321), VadConfig(true, 1000, 1.0))) {
+        for (vad in listOf(VadConfig(true, 0, 0.3), VadConfig(false, 999, 0.87654321), VadConfig(true, 1000, 1.0))) {
             save(repository, AudioConfig(), vad)
             val json = JSONObject(repository.exportJson())
             assertEquals(vad, SettingsRepository(context).get().vad)
@@ -59,7 +59,7 @@ class SettingsRepositoryAudioTest {
     @Test fun vadRejectsInvalidValuesEvenWhenDisabled() {
         val repository = SettingsRepository(context)
         for ((key, value) in listOf("paddingMs" to -1, "paddingMs" to 1001, "paddingMs" to 0.5,
-            "startThreshold" to 0.49, "startThreshold" to 1.01, "startThreshold" to "0.7")) {
+            "startThreshold" to 0.29, "startThreshold" to 1.01, "startThreshold" to "0.7")) {
             val json = JSONObject(repository.exportJson())
             json.getJSONObject("vad").put(key, value)
             assertThrows(IllegalArgumentException::class.java) { repository.previewImport(json.toString()) }

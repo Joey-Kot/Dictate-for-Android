@@ -119,6 +119,6 @@
     <string name="vad_threshold">Порог начала речи VAD</string>
     <string name="vad_help">При распознавании готовой записи участки речи выделяются перед кодированием или разбиением на части. В реальном времени используется вся запись.</string>
     <string name="vad_invalid_padding">Отступ VAD должен быть от 0 до 1000 мс</string>
-    <string name="vad_invalid_threshold">Порог начала речи должен быть от 0,5 до 1,0</string>
+    <string name="vad_invalid_threshold">Порог начала речи должен быть от 0,3 до 1,0</string>
     <string name="vad_failed">Не удалось подготовить аудио с VAD: %1$s</string>
 </resources>
