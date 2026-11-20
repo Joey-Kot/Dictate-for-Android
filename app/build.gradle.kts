@@ -8,7 +8,7 @@ val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS").orNull
 val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD").orNull
 
 // Update this version for each release; CI and local builds use the same value.
-val appVersionName = "1.0.1"
+val appVersionName = "1.0.2"
 val versionParts = appVersionName.split(".").map { it.toIntOrNull() }
 require(versionParts.size == 3 && versionParts.all { it != null }) {
     "appVersionName must use the numeric major.minor.patch format."
